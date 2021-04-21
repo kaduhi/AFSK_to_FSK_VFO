@@ -3,6 +3,18 @@
 #include "Wire.h"
 
 
+#define USE_ROTARY_ENCODER            0
+#define USE_A3_AS_TX_SIGNAL           0
+
+#define TEST_TIMER1_INPUT_CAPTURE     0
+
+
+#define CPU_CLOCK_FREQ                16000000                    // 16MHz
+#define MIN_INPUT_CAPTURE_VALUE       (CPU_CLOCK_FREQ / 4000)     // maximum capture frequency is 4000Hz
+#define MAX_INPUT_CAPTURE_VALUE       (CPU_CLOCK_FREQ / 150)      // minimum capture frequency is 150Hz
+#define UPDATE_VFO_PERIOD_IN_CLK      (CPU_CLOCK_FREQ / 100)      // update VFO frequency 100 time/sec.
+
+
 // si5451 definations 
 #define BB0(x) ((uint8_t)x)             // Bust int32 into Bytes
 #define BB1(x) ((uint8_t)(x>>8))
@@ -30,6 +42,15 @@ uint8_t  si5351bx_clken = 0xFF;         // Private, all CLK output drivers off
 #define  SLED1  13
 
 
+/* 7 segment LED bit mask:
+        0x04
+    0x08    0x10
+        0x01
+    0x80    0x02
+        0x40
+                0x20
+ */
+
 #define   LED_N_0  0xde
 #define   LED_N_1  0x12
 #define   LED_N_2  0xd5
@@ -54,6 +75,7 @@ uint8_t  si5351bx_clken = 0xFF;         // Private, all CLK output drivers off
 #define   LED_P     0x9d
 #define   LED_BLANK 0x00
 #define   LED_question 0xbd
+#define   LED_point 0x20
 
 
 
@@ -78,7 +100,6 @@ byte        d = 0;
 byte        cLast; 
 
 volatile unsigned long tcount;
-unsigned long        duration=0;
 
 int                Eadr;
 volatile byte      sw_inputs ; 
@@ -115,9 +136,6 @@ unsigned  long frequency;
 unsigned  long freq_result;  
 unsigned  long OPfreq;
 unsigned  long  RITtemp; 
-unsigned  long  RITresult;
-volatile unsigned long   time1;
-volatile unsigned long   time0;
 unsigned long   temp ; 
 unsigned long   cal_value;
  //********************************************** 
@@ -129,54 +147,172 @@ unsigned long  high_band_limit; //high limit, band tuning
 unsigned long  low_absolute_limit = 500000;
 unsigned long  high_absolute_limit = 30000000;
 
-ISR (TIMER1_COMPA_vect) {TIMER1_SERVICE_ROUTINE();}
+
+volatile uint8_t gTimer1CaptureEvents = 0;
+volatile uint16_t gTimer1OverflowCounter = 0;
+volatile uint32_t gCurrentTimer1CaptureValue = 0;
+uint32_t gLastTimer1CaptureValue = 0;
+uint16_t gTimer1CaptureCount = 0;
+
 
 void setup() {
- //switch inputs
+    //switch inputs
 
-DDRB = 0xff;
-DDRD = 0Xff; 
-pinMode(A3,INPUT_PULLUP);
-pinMode(A0, INPUT_PULLUP);
-pinMode(A1, INPUT_PULLUP);
+    DDRB = 0xff;
+    DDRD = 0Xff; 
+#if USE_A3_AS_TX_SIGNAL
+    pinMode(A3, INPUT_PULLUP);
+#endif
+#if USE_ROTARY_ENCODER
+    pinMode(A0, INPUT_PULLUP);
+    pinMode(A1, INPUT_PULLUP);
+#endif
 
+    noInterrupts();
+    TCCR2A = 0;
+    TCCR2B = 0;
+    ASSR = 0;
+    TCNT2 = 0;
 
-     
-      noInterrupts();
-      TCCR1A = 0;
-      TCCR1B = 0;
-      TCNT1 = 0;
-      
-      OCR1A = 238;
-      TCCR1B = 0x0a; 
-      TIMSK1 |= (1 << OCIE1A);
-      interrupts();   
+    OCR2A = 125;    // 1ms interval
+    TCCR2A = 0x02;  // WGM21=1, WGM20=0
+    TCCR2B = 0x05;  // WGM22=0, CS=0b100 (16MHz / 128 = 2MHz)
+    TIFR2 = 0x07;   // clear interrupt flags
+    TIMSK2 |= (1 << OCIE2A);  // enable Output Compare Match A Interrupt
+    interrupts();   
 
-      
-      si5351bx_init(); 
-      cal_data();    //load calibration data  
-      stepK = Fstep100 ; //default tuning rate
-      stepSize = 2; 
-      delay(1000); 
-      int_band();
-      delay(1000); //let things settle down a bit
- 
-      displayfreq();
-      PLLwrite();
-      time0 = tcount;
+    si5351bx_init(); 
+    cal_data();    //load calibration data  
+    stepK = Fstep100 ; //default tuning rate
+    stepSize = 2; 
+    delay(1000); 
+    int_band();
+    delay(1000); //let things settle down a bit
+
+    displayfreq();
+    PLLwrite();
+
+    // initialize analog comparator
+    ADCSRA = 0x00;          // ADEN=0
+    ADCSRB = (1 << ACME);   // enable Analog Comparator Multiplexer
+    ADMUX = 0x02;           // MUX=0b0010 (ADC2)
+    ACSR = (1 << ACBG) | (1 << ACI) | (1 << ACIS1) | (0 << ACIS0);   // enable Bandgap Voltage Reference, clear Analog Comparator Interrupt flag, ACIS=0b10 (Comparator Interrupt on Falling Output Edge)
+    //ACSR |= (1 << ACIE);   // enable Analog Comparator Interrupt
+
+    // initialize TIMER1
+    noInterrupts();
+    TCCR1A = 0;
+    TCCR1B = 0;
+    TCCR1C = 0;
+    TCCR1B = (1 << ICNC1) | (0 << ICES1) | (1 << CS10);// enable Input Capture Noise Canceler, Input Capture Edge Select (Falling), CS=0b001 (16MHz / 1)
+    ICR1 = 0;
+    ACSR |= (1 << ACIC);      // enable Analog Comparator Input Capture
+    TIFR1 = 0x027;            // clear interrupt flags
+    TIMSK1 |= (1 << ICIE1) | (1 << TOIE1);   // enable Input Capture Interrupt, enable Timer1 Overflow Interrupt
+    interrupts();
+
+    // disable CLK1
+    si5351bx_setfreq(1, 499999);
+
+#if TEST_TIMER1_INPUT_CAPTURE
+    pinMode(A0, OUTPUT);
+    pinMode(A1, OUTPUT);
+    pinMode(A3, OUTPUT);
+#endif
 }
 
 
 void loop() {
-  // test for switch closed
-       
-        if (bitRead(sw_inputs, E_sw) == LOW) {timedswitch(); debounceE();}         
-        if (bitRead(sw_inputs, U_sw) == LOW) {Tune_UP();} //test tune up flag
-        if (bitRead(sw_inputs, D_sw) == LOW) {Tune_DWN();} //test tune down flag   
-        if (A3==LOW) {transmit();}
-        if (EncoderFlag == 1) {Tune_UP();} //test tune up flag
-        if (EncoderFlag == 2) {Tune_DWN();} //test tunr down flag 
+    static uint16_t sPrevTimer1 = 0;
+    bool processUI = false;
+    if ((TCNT1 - sPrevTimer1) >= (CPU_CLOCK_FREQ / 1000)) {
+        sPrevTimer1 = TCNT1;
+        processUI = true;
+    }
+    else {
+        goto SKIP_UI;
+    }
 
+    if (bitRead(sw_inputs, E_sw) == LOW) {  // test for switch closed
+        timedswitch();
+        debounceE();
+    }
+    if (bitRead(sw_inputs, U_sw) == LOW) {  // test tune up flag
+        Tune_UP();
+    } 
+    if (bitRead(sw_inputs, D_sw) == LOW) {  // test tune down flag
+        Tune_DWN();
+    }
+
+#if USE_A3_AS_TX_SIGNAL
+    if (A3==LOW) {
+        transmit();
+    }
+#endif
+
+#if USE_ROTARY_ENCODER
+    if (EncoderFlag == 1) {     // test tune up flag
+        Tune_UP();
+    }
+    if (EncoderFlag == 2) {     // test tune down flag 
+        Tune_DWN();
+    }
+#endif
+
+SKIP_UI:
+
+#if TEST_TIMER1_INPUT_CAPTURE
+    static uint8_t sCnt1;
+    digitalWrite(A1, ((++sCnt1 & 0x01) ? HIGH : LOW));
+#endif
+
+    noInterrupts();
+    uint32_t currentTimer1CaptureValue = gCurrentTimer1CaptureValue;
+    uint8_t timer1CaptureEvents = gTimer1CaptureEvents;
+    gTimer1CaptureEvents = 0;
+    interrupts();
+    static bool sIsTransmitting = false;
+    if (timer1CaptureEvents > 0) {
+#if TEST_TIMER1_INPUT_CAPTURE
+        static uint8_t sCnt3;
+        digitalWrite(A3, ((++sCnt3 & 0x01) ? HIGH : LOW));
+#endif
+        gTimer1CaptureCount += timer1CaptureEvents;
+        uint32_t totalWaveLength = currentTimer1CaptureValue - gLastTimer1CaptureValue;
+        if (totalWaveLength >= UPDATE_VFO_PERIOD_IN_CLK) {
+            uint32_t averageWaveLength = (totalWaveLength + (gTimer1CaptureCount >> 1)) / gTimer1CaptureCount;
+            gLastTimer1CaptureValue = currentTimer1CaptureValue;
+            gTimer1CaptureCount = 0;
+            if (MIN_INPUT_CAPTURE_VALUE <= averageWaveLength && averageWaveLength <= MAX_INPUT_CAPTURE_VALUE) {
+                // found audio signal
+                if (sIsTransmitting) {
+                    uint32_t audioFreq = CPU_CLOCK_FREQ / averageWaveLength;
+                    si5351bx_setfreq(1, OPfreq + audioFreq);    // update CLK1 frequency
+                }
+                sIsTransmitting = true;
+            }
+        }
+    }
+    else if (processUI && sIsTransmitting) {
+        noInterrupts();
+        uint16_t capturedValue = TCNT1;
+        uint32_t currentTimer1Value = ((uint32_t)gTimer1OverflowCounter << 16) | capturedValue;
+        if ((TIFR1 & (1 << TOV1)) && (capturedValue & 0x8000) == 0x0000) {
+            // timer1 overflow happened and hasn't handled it yet
+            currentTimer1Value += 0x10000;
+        }
+        interrupts();
+        uint32_t noSignalPeriod = currentTimer1Value - gLastTimer1CaptureValue;
+        if (noSignalPeriod > (UPDATE_VFO_PERIOD_IN_CLK * 10)) {
+            gLastTimer1CaptureValue = currentTimer1Value;
+            gTimer1CaptureCount = 0;
+            gTimer1CaptureEvents = 0;
+
+            // disable CLK1
+            si5351bx_setfreq(1, 499999);
+            sIsTransmitting = false;
+        }
+    }
 }   
 
 
@@ -185,212 +321,292 @@ void loop() {
 //**************************************************************
 
 void debounceE(){
-    while (bitRead(sw_inputs, E_sw) == LOW) {delay(1);} 
-    }
+    while (bitRead(sw_inputs, E_sw) == LOW) { }
+}
 
 void debounceU(){
-    while (bitRead(sw_inputs, U_sw) == LOW) {delay(1);} 
+    while (bitRead(sw_inputs, U_sw) == LOW) { }
 }
 
 void debounceD(){
-    while (bitRead(sw_inputs, D_sw) == LOW) {delay(1);} 
+    while (bitRead(sw_inputs, D_sw) == LOW) { } 
 }
 
+#if USE_A3_AS_TX_SIGNAL
 void transmit() {
-        si5351bx_setfreq(0,RITtemp);
-        si5351bx_setfreq(1,RITtemp); 
+        si5351bx_setfreq(0, RITtemp);
+        //si5351bx_setfreq(1, RITtemp); 
         while (A3 == LOW){loop;} 
-      si5351bx_setfreq(0,OPfreq); //update clock chip with VFO frequency.
-      si5351bx_setfreq(1,OPfreq); //update clock chip with VFO 
+      si5351bx_setfreq(0, OPfreq); //update clock chip with VFO frequency.
+      //si5351bx_setfreq(1, OPfreq); //update clock chip with VFO 
 }
+#endif
 
 
-void timedswitch(){  
-    duration = 0;
+void timedswitch() {  
+    unsigned long time0;
+    unsigned long duration;
+
     time0 = tcount;
-  do {time1 = tcount; duration = time1- time0; //calculate how long the button has been pushed
-   if (duration == 10000) {digit5 = LED_N_6; digit4 = LED_n; digit3 = 0x00; digit2 = 0x00; digit1 = 0x00;}
-   if (duration == 50000) {digit5 = LED_C; digit4 = LED_A; digit3 = LED_L; digit2= 0x00; digit1 = 0x00;}
-   if (duration == 2000) {digit5 = LED_r; digit4 = 0x00; digit3 = 0x00; digit2 = 0x00; digit1 = 0x00;} 
-  }
-  while (bitRead(sw_inputs,E_sw) !=1);
-    duration = time1 - time0;
-  
-    if (duration > 50000) {calibration();duration = 0;}
-    if (duration > 10000) {changeBand(); duration = 0;}
-    if (duration > 2000)  {RIT(); duration =0;}
-    if (duration > 100)  {nextFstep(); duration = 0;}
+
+    do {
+        duration = (unsigned long)tcount - time0;   // calculate how long the button has been pushed
+        if (duration == 1000) {
+            digit5 = LED_N_6;
+            digit4 = LED_n;
+            digit3 = LED_BLANK;
+            digit2 = LED_BLANK;
+            digit1 = LED_BLANK;
+        }
+        if (duration == 5000) {
+            digit5 = LED_C;
+            digit4 = LED_A;
+            digit3 = LED_L;
+            digit2 = LED_BLANK;
+            digit1 = LED_BLANK;
+        }
+        if (duration == 200) {
+            digit5 = LED_r;
+            digit4 = LED_BLANK;
+            digit3 = LED_BLANK;
+            digit2 = LED_BLANK;
+            digit1 = LED_BLANK;
+        } 
+        if (duration == 10000) {
+            digit5 = LED_r;
+            digit4 = LED_E;
+            digit3 = LED_N_5;
+            digit2 = LED_BLANK;
+            digit1 = LED_BLANK;
+        }
+    } while (bitRead(sw_inputs, E_sw) != 1);
+
+    if (duration >= 10000) {
+        reset_flash();
+    }
+    else if (duration >= 5000) {
+        calibration();
+    }
+    else if (duration >= 1000) {
+        changeBand();
+    }
+    else if (duration >= 200)  {
+        RIT();
+    }
+    else if (duration >= 10) {
+        nextFstep();
+    }
 }
 
 
-void  Tune_UP() {
-      FREQ_incerment();
-      delay(150);
-      
-//      debounceU();
+void Tune_UP() {
+    FREQ_incerment();
+    delay(150);
 }
 
 void Tune_DWN() {    
-      FREQ_decerment();
-      delay(150); 
- //     debounceD();   
+    FREQ_decerment();
+    delay(150); 
 }
 
 
 // adjust the operating frequency
 void FREQ_incerment() {
-      EncoderFlag = 0;
-      if (OPfreq >= high_absolute_limit) {return;} 
-      OPfreq  = OPfreq + stepK;  //add frequenc tuning step to frequency word
-      outofband = 0;
-      if (OPfreq > high_band_limit) {outofband =1;} //band tuning limits
-      if (OPfreq < low_band_limit) {outofband = 1;}
-      if (ritflag & RIT_ON == 1){RITdisplay();}
-      else displayfreq();
-      PLLwrite();    
+    EncoderFlag = 0;
+    if (OPfreq >= high_absolute_limit) {
+        return;
+    } 
+
+    OPfreq += stepK;   // add frequenc tuning step to frequency word
+
+    outofband = 0;
+    if (OPfreq > high_band_limit) {  // band tuning limits
+        outofband = 1;
+    }
+
+    if (ritflag & RIT_ON) {
+        RITdisplay();
+    }
+    else {
+        displayfreq();
+    }
+    
+    PLLwrite();    
 }
 
 void FREQ_decerment() {
-      EncoderFlag = 0; 
-      if (OPfreq <= low_absolute_limit) {return;} 
-      OPfreq  = OPfreq - stepK;
-      outofband = 0;
-      if (OPfreq < low_band_limit) {outofband = 1;}
-      if (OPfreq > high_band_limit) {outofband =1;} 
-      if (ritflag & RIT_ON == 1){RITdisplay();}
-      else displayfreq();
-      PLLwrite(); 
+    EncoderFlag = 0; 
+    if (OPfreq <= low_absolute_limit) {
+        return;
+    } 
+
+    OPfreq -= stepK;
+
+    outofband = 0;
+    if (OPfreq < low_band_limit) {  // band tuning limits
+        outofband = 1;
+    }
+
+    if (ritflag & RIT_ON) {
+        RITdisplay();
+    }
+    else {
+        displayfreq();
+    }
+
+    PLLwrite(); 
 }
 
 //toggle tuning step rate
 void  nextFstep () {
-
-if    (ritflag == 1) {flip_sideband();}
-else  incStep();
+    if (ritflag == 1) {
+        flip_sideband();
+    }
+    else {
+        incStep();
+    }
 }
 
-void incStep(){ 
-if (outofband == 1) {bigsteps();}
-else allsteps();
+void incStep() { 
+    if (outofband == 1) {
+        bigsteps();
+    }
+    else {
+        allsteps();
+    }
 }
 
 
 void allsteps() {
-  
-    ++ stepSize ;
-    if (stepSize == 7) {(stepSize = 1);}
-    
-switch(stepSize) {
-     case 1:
-          stepK = Fstep10;
-          d1temp = digit1;
-          digit1 = 0x00;    
-          delay(100); 
-          digit1 = d1temp;
-          break;
-           
-     case 2:
-          stepK = Fstep100;
-          d1temp = digit2;
-          digit2 = 0x00;
-          delay(100); 
-          digit2 = d1temp;
-          break; 
+    if (++stepSize > 6) {
+        stepSize = 1;
+    }
+
+    switch(stepSize) {
+    case 1:
+        stepK = Fstep10;
+        d1temp = digit1;
+        digit1 = LED_BLANK;    
+        delay(100); 
+        digit1 = d1temp;
+        break;
+
+    case 2:
+        stepK = Fstep100;
+        d1temp = digit2;
+        digit2 = LED_BLANK;
+        delay(100); 
+        digit2 = d1temp;
+        break; 
 
     case 3:
-          stepK = Fstep1K;
-          d1temp = digit3;
-          digit3 = 0x00;  
-          delay(100); 
-          digit3 = d1temp;
-          break; 
+        stepK = Fstep1K;
+        d1temp = digit3;
+        digit3 = LED_BLANK;  
+        delay(100); 
+        digit3 = d1temp;
+        break; 
 
-       case 4:
-          stepK = Fstep5K;
-          d1temp = digit3;
-          digit3 = 0x00;  
-          delay(100); 
-          digit3 = d1temp;
-          delay(100);
-          digit3 = 0x00;
-          delay(100);
-          digit3 = d1temp;
-          break;    
+    case 4:
+        stepK = Fstep5K;
+        d1temp = digit3;
+        digit3 = LED_BLANK;  
+        delay(100); 
+        digit3 = d1temp;
+        delay(100);
+        digit3 = LED_BLANK;
+        delay(100);
+        digit3 = d1temp;
+        break;    
 
- case 5:
-          stepK = Fstep10K;
-          d1temp = digit4;
-          digit4 = 0x00;  
-          delay(100); 
-          digit4 = d1temp;
-          break;
+    case 5:
+        stepK = Fstep10K;
+        d1temp = digit4;
+        digit4 = LED_BLANK;  
+        delay(100); 
+        digit4 = d1temp;
+        break;
 
- case 6:
-          stepK = Fstep100K;
-          d1temp = digit5;
-          digit5 = 0x00;  
-          delay(100); 
-          digit5 = d1temp;
-          break;
-                        
-                }
+    case 6:
+        stepK = Fstep100K;
+        d1temp = digit5;
+        digit5 = LED_BLANK;  
+        delay(100); 
+        digit5 = d1temp;
+        break;
+    }
 }
 
 void bigsteps() {
-    ++ stepSize ;
-    if (stepSize == 7) {(stepSize = 4);}
+    if (++stepSize > 6) {
+        stepSize = 4;
+    }
     
-switch(stepSize) {
-case 1: break;
-case 2: break;
-case 3:  stepK = Fstep1K;
-          d1temp = digit1;
-          digit1 = 0x00;  
-          delay(100); 
-          digit1 = d1temp;
-          break;  
-case 4:
-          stepK = Fstep5K;
-          d1temp = digit1;
-          digit1 = 0x00;  
-          delay(100); 
-          digit1 = d1temp;
-          delay(100);
-          digit1 = 0x00;
-          delay(100);
-          digit1 = d1temp;
-          break;    
+    switch(stepSize) {
+    case 1:
+        break;
 
- case 5:
-          stepK = Fstep10K;
-          d1temp = digit2;
-          digit2 = 0x00;  
-          delay(100); 
-          digit2 = d1temp;
-          break;
+    case 2:
+        break;
 
- case 6:
-          stepK = Fstep100K;
-          d1temp = digit3;
-          digit3 = 0x00;  
-          delay(100); 
-          digit3 = d1temp;
-          break;
-}
+    case 3:  stepK = Fstep1K;
+        d1temp = digit1;
+        digit1 = LED_BLANK;  
+        delay(100); 
+        digit1 = d1temp;
+        break; 
+
+    case 4:
+        stepK = Fstep5K;
+        d1temp = digit1;
+        digit1 = LED_BLANK;  
+        delay(100); 
+        digit1 = d1temp;
+        delay(100);
+        digit1 = LED_BLANK;
+        delay(100);
+        digit1 = d1temp;
+        break;    
+
+    case 5:
+        stepK = Fstep10K;
+        d1temp = digit2;
+        digit2 = LED_BLANK;  
+        delay(100); 
+        digit2 = d1temp;
+        break;
+
+    case 6:
+        stepK = Fstep100K;
+        d1temp = digit3;
+        digit3 = LED_BLANK;  
+        delay(100); 
+        digit3 = d1temp;
+        break;
+    }
 }
 
 
 void flip_sideband() {
-if (OPfreq > RITtemp){OPfreq = RITtemp - 600; digit4 = LED_neg;}
-  else {OPfreq = RITtemp + 600; digit4 = LED_BLANK;}
-  debounceE(); 
+    if (OPfreq > RITtemp) {
+        OPfreq = RITtemp - 600;
+        digit4 = LED_neg;
+    }
+    else {
+        OPfreq = RITtemp + 600;
+        digit4 = LED_BLANK;
+    }
+    debounceE(); 
 }
 
 
 void RIT() {
- 
-    if (ritflag == 1){RIText();}
-    else RITenable();
+    if (ritflag == 1) {
+        RIText();
+    }
+    else {
+        RITenable();
+    }
 }
 
 void RITenable(){
@@ -400,14 +616,15 @@ void RITenable(){
     stepSize = 1;
     stepK = 10; 
     RITtemp = OPfreq;
-   if (outofband == 0)  {OPfreq = RITtemp +600;} 
+    if (outofband == 0) {
+        OPfreq = RITtemp +600;
+    } 
     PLLwrite();
     RITdisplay();
     debounceE();
 }
 
 void RIText() {
-  
     ritflag =0;
     stepK = tempSK;
     stepSize = tempSS; 
@@ -418,33 +635,31 @@ void RIText() {
 }
 
 void RITdisplay() {
-if (RITtemp >= OPfreq) 
-{
-  RITresult = RITtemp - OPfreq;
-  digit4 = LED_neg;
-  }
-else 
-  {
-    RITresult = OPfreq - RITtemp; 
-    digit4 = 0x00;   
+    unsigned long RITresult;
+
+    if (RITtemp >= OPfreq) {
+        RITresult = RITtemp - OPfreq;
+        digit4 = LED_neg;
     }
-     
-        frequency = RITresult;
-        freq_result = frequency%10000;
-        freq_result = freq_result/1000;
-        hex2seg(); 
-        digitX = digitX+ 0x20;
-        digit3 = digitX;
-        freq_result = frequency%1000;
-        freq_result = freq_result/100;
-        hex2seg(); 
-        digit2 = digitX;
-        freq_result = frequency%100;
-        freq_result = freq_result/10;
-         hex2seg();
-        digit1 = digitX;    
- 
-  
+    else {
+        RITresult = OPfreq - RITtemp; 
+        digit4 = LED_BLANK;   
+    }
+
+    frequency = RITresult;
+    freq_result = frequency%10000;
+    freq_result = freq_result/1000;
+    hex2seg(); 
+    digitX = digitX + LED_point;
+    digit3 = digitX;
+    freq_result = frequency%1000;
+    freq_result = freq_result/100;
+    hex2seg(); 
+    digit2 = digitX;
+    freq_result = frequency%100;
+    freq_result = freq_result/10;
+    hex2seg();
+    digit1 = digitX;    
 }
 
 
@@ -466,13 +681,13 @@ void    displayfreq()
           frequency = OPfreq;    
           freq_result = frequency/10000000;
           hex2seg();
-          if (freq_result == 0){digitX= 0x00;}
+          if (freq_result == 0){digitX= LED_BLANK;}
           digit5 = digitX;
 
           freq_result = frequency%10000000;
           freq_result = freq_result/1000000;
           hex2seg();
-          digitX = digitX + 0x20;
+          digitX = digitX + LED_point;
           digit4 = digitX;
          
         freq_result = frequency%1000000;     //get the 100,000 kHz digit by first getting the remainder 
@@ -497,7 +712,7 @@ void FREQdisplay(){
         freq_result = frequency%1000000;     //get the 100,000 kHz digit by first getting the remainder 
         freq_result = freq_result / 100000;  //divide the remainder by 100,000 to get the MSD
         hex2seg();                           //convert the result to the 7 segment code
-        if (freq_result == 0){digitX = 0x00;}
+        if (freq_result == 0){digitX = LED_BLANK;}
         digit5 = digitX;  
         
         freq_result = frequency%100000;      //repeat the process for 10K, 1K and 100 Hz digits
@@ -508,7 +723,7 @@ void FREQdisplay(){
         freq_result = frequency%10000;
         freq_result = freq_result/1000;
         hex2seg(); 
-        digitX = digitX+ 0x20;
+        digitX = digitX + LED_point;
         digit3 = digitX;
         
         freq_result = frequency%1000;
@@ -543,82 +758,84 @@ void  hex2seg()
  * switch inputs. 
  */
 
-void TIMER1_SERVICE_ROUTINE() 
+ISR(TIMER2_COMPA_vect)
 {  
-     byte cREG;
-     cREG = SREG;
-          ++tcount;
-        
-        ++ digit_counter;
-        if (digit_counter == 6 ) {(digit_counter = 1);}
-       
-switch(digit_counter) {
-  
-            case 1: 
-            digitalWrite(SLED5, HIGH); 
-            readswitches(); 
-            PORTD = digit1;
-            digitalWrite(SLED1, LOW);
-           
-            break;
-          
-          case 2: 
-            digitalWrite(SLED1, HIGH);
-             readswitches();  
-            PORTD = digit2;
-            digitalWrite(SLED2, LOW);
-           
-            break;
-        
-         case 3:  
-            digitalWrite(SLED2, HIGH); 
-             readswitches(); 
-            PORTD = digit3;
-            digitalWrite(SLED3, LOW);
-            break;
-        
-          case 4: 
-            digitalWrite(SLED3, HIGH); 
-           readswitches(); 
-            PORTD = digit4;
-            digitalWrite(SLED4, LOW);
-            break;
+    ++tcount;
 
-          case 5: 
-            digitalWrite(SLED4, HIGH);
-             readswitches();  
-            PORTD = digit5;
-            digitalWrite(SLED5, LOW);
-            break;
-        }
-        SREG= cREG; 
+    if (++digit_counter > 5) {
+        digit_counter = 0;
+    }
+
+    switch(digit_counter) {
+    case 0:
+        digitalWrite(SLED5, HIGH); 
+        readswitches(); 
+        break;
+
+    case 1: 
+        PORTD = digit1;
+        digitalWrite(SLED1, LOW);
+        break;
+
+    case 2: 
+        digitalWrite(SLED1, HIGH);
+        PORTD = digit2;
+        digitalWrite(SLED2, LOW);
+        break;
+
+    case 3:  
+        digitalWrite(SLED2, HIGH); 
+        PORTD = digit3;
+        digitalWrite(SLED3, LOW);
+        break;
+
+    case 4: 
+        digitalWrite(SLED3, HIGH); 
+        PORTD = digit4;
+        digitalWrite(SLED4, LOW);
+        break;
+
+    case 5: 
+        digitalWrite(SLED4, HIGH);
+        PORTD = digit5;
+        digitalWrite(SLED5, LOW);
+        break;
+    }
 }
 
-void readswitches() {                         //read the switches and encoder here
-               
-              DDRD = 0x00;
-              PORTD= 0Xff; 
-            digitalWrite(8, LOW); 
-            sw_inputs = PIND; 
-            digitalWrite(8, HIGH); 
-            DDRD =0xff;
-            c = digitalRead(ENC_A);  //read encoder clock bit
-            if (c !=cLast){encoder();} //call if changed  
-            
-        }
+void readswitches() {
+    //read the switches and encoder here
+    DDRD = 0x00;
+    PORTD = 0xff;
+    digitalWrite(8, LOW);
+    sw_inputs = PIND;
+    digitalWrite(8, HIGH);
+    DDRD = 0xff;
+    
+#if USE_ROTARY_ENCODER
+    c = digitalRead(ENC_A);  // read encoder clock bit
+    if (c != cLast) {   // call if changed
+        encoder();
+    }
+#endif
+}
                                  
-     // encoder, test for direction only on 0 to 1 clock state change
-     
-    void encoder()      {
-        if (cLast ==0){
+// encoder, test for direction only on 0 to 1 clock state change
+
+#if USE_ROTARY_ENCODER
+void encoder() {
+    if (cLast ==0) {
         d = digitalRead(ENC_B);    
-          if ( d == LOW ) {EncoderFlag = 2;}          //if low
-        
-        else {EncoderFlag = 1;}          //if high
-              
-                       }
-         cLast = c;            //store new state of clock  
-                        }
+        if (d == LOW) {     // if low
+            EncoderFlag = 2;
+        }
+        else {              // if high
+            EncoderFlag = 1;
+        }
+    }
+    cLast = c;  // store new state of clock  
+}
+#endif
 
 
 /*
@@ -626,8 +843,8 @@ void readswitches() {                         //read the switches and encoder he
  */
 
 void PLLwrite() {   
-      si5351bx_setfreq(0,OPfreq); //update clock chip with VFO frequency.
-      si5351bx_setfreq(1,OPfreq); //update clock chip with VFO 
+    si5351bx_setfreq(0, OPfreq); //update clock chip with VFO frequency.
+    //si5351bx_setfreq(1, OPfreq); //update clock chip with VFO 
 }
 
 /*
@@ -639,16 +856,20 @@ void PLLwrite() {
 
  
 void calibration(){
+    displayfreq();
+    debounceE();
+    digit5 = LED_C;
 
-  displayfreq();
-  debounceE();
-  digit5 = LED_C;
- 
-while (bitRead (sw_inputs,E_sw)== HIGH)
-{
-  if   (bitRead(sw_inputs, U_sw) == LOW){ADJ_UP();debounceU();}
-  if   (bitRead(sw_inputs, D_sw) == LOW) {ADJ_DWN(); debounceD();} 
-}
+    while (bitRead(sw_inputs, E_sw) == HIGH) {
+        if (bitRead(sw_inputs, U_sw) == LOW) {
+            ADJ_UP();
+            debounceU();
+        }
+        if (bitRead(sw_inputs, D_sw) == LOW) {
+            ADJ_DWN();
+            debounceD();
+        } 
+    }
 
     temp = si5351bx_vcoa;  //store the cal value 
     cal_value = temp;  //store the cal value 
@@ -662,8 +883,7 @@ while (bitRead (sw_inputs,E_sw)== HIGH)
 
     displayfreq();  
     debounceE(); 
-   
-} //end of calibration routine
+}
 
 
 
@@ -678,7 +898,7 @@ void ADJ_DWN() {
 }
 
 void calwrite() {
-      si5351bx_setfreq(0,OPfreq); 
+      si5351bx_setfreq(0, OPfreq); 
 
 }
 
@@ -705,7 +925,7 @@ void cal_data(){
 void changeBand(){
       digit5 = LED_N_6;
       digit4 = LED_n; 
-      digit3 = 0x00; 
+      digit3 = LED_BLANK; 
       get_band();
     
     debounceE(); 
@@ -743,7 +963,7 @@ void int_band() {
   if (BANDpointer == 0xff) {BANDpointer= 1; changeBand();}
   digit5 = LED_N_6;
   digit4 = LED_n; 
-  digit3 = 0x00;
+  digit3 = LED_BLANK;
   get_band(); 
 }
 
@@ -925,4 +1145,34 @@ void i2cWriten(uint8_t reg, uint8_t *vals, uint8_t vcnt){   // write array
     Wire.write(reg);
     while (vcnt--) Wire.write(*vals++);
     Wire.endTransmission();
+}
+
+void reset_flash(void) {
+    EEPROM.write(7, 0xff);
+    EEPROM.write(6, 0xff);
+    EEPROM.write(5, 0xff);
+    EEPROM.write(4, 0xff);
+
+    EEPROM.write(0, 0xff);
+
+    void (*cold_reset)(void) = 0;
+    cold_reset();
+}
+
+ISR(TIMER1_CAPT_vect) {
+#if TEST_TIMER1_INPUT_CAPTURE
+    static uint8_t sCnt0;
+    digitalWrite(A0, ((++sCnt0 & 0x01) ? HIGH : LOW));
+#endif
+    uint16_t capturedValue = ICR1;
+    gCurrentTimer1CaptureValue = ((uint32_t)gTimer1OverflowCounter << 16) | capturedValue;
+    if ((TIFR1 & (1 << TOV1)) && (capturedValue & 0x8000) == 0x0000) {
+        // timer1 overflow happened and hasn't handled it yet
+        gCurrentTimer1CaptureValue += 0x10000;
+    }
+    gTimer1CaptureEvents++;
+}
+
+ISR(TIMER1_OVF_vect) {
+    gTimer1OverflowCounter++;
 }
