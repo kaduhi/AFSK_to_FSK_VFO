@@ -348,11 +348,7 @@ case 3:  stepK = Fstep1K;
           digit1 = 0x00;  
           delay(100); 
           digit1 = d1temp;
-          break; 
-
-
-
-break;  
+          break;  
 case 4:
           stepK = Fstep5K;
           d1temp = digit1;
@@ -367,7 +363,7 @@ case 4:
 
  case 5:
           stepK = Fstep10K;
-          d1temp = digit4;
+          d1temp = digit2;
           digit2 = 0x00;  
           delay(100); 
           digit2 = d1temp;
@@ -375,7 +371,7 @@ case 4:
 
  case 6:
           stepK = Fstep100K;
-          d1temp = digit5;
+          d1temp = digit3;
           digit3 = 0x00;  
           delay(100); 
           digit3 = d1temp;
@@ -800,7 +796,7 @@ void BAND16() {
     digit2 = LED_N_1;
     digit1 = LED_N_6;
     low_band_limit = 1800000;
-    high_band_limit = 1820000;
+    high_band_limit = 2000000;
     OPfreq = 1840000;    
 }
 
@@ -865,7 +861,7 @@ void BAND12() {
     digit1 = LED_N_2; 
     low_band_limit = 24890000;
     high_band_limit = 24990000;
-    OPfreq = 24906000;
+    OPfreq = 24900000;
 }
 
 void BAND10() {  
