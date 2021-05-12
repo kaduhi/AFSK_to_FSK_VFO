@@ -5,6 +5,8 @@
 // 4/9/21 A0 used to enable tx for testing.
 // 4/12/21 fixed tuning rate stuck on 10 Hz in kHz display mode.  
 // 4/16/21 fixed 80M start up freq,fixed 17M resistor sense voltage.  
+// 4/21/21 adjusted FSK updating rate for 45.45bps RTTY.
+// 4/25/21 improve resolution of FSK from 1Hz to 0.0625Hz
 
 //FT8 fsk mods by Kazuhisa "Kazu" Terasaki AG6NS 
 //Si5351 routine by Jerry Gaffke, KE7ER
@@ -18,10 +20,6 @@
 #define FT8_VFO                         1
 
 #define CPU_CLOCK_FREQ                  16000000                    // 16MHz
-#define MIN_INPUT_AUDIO_FREQ            150                         // minimum input audio frequency limit is 150Hz
-#define MAX_INPUT_AUDIO_FREQ            4000                        // maximum input audio frequency limit is 4000Hz
-#define UPDATE_VFO_PERIOD               (CPU_CLOCK_FREQ / 100)      // update VFO frequency 100 time/sec.
-#define NO_SIGNAL_PERIOD_THRESHOLD      (UPDATE_VFO_PERIOD * 5)     // no signal detected threshold
 
 
 // si5451 definations 
@@ -32,8 +30,11 @@
 #define SI5351BX_ADDR 0x60              // I2C address of Si5351   (typical)
 #define SI5351BX_XTALPF 3               // 1:6pf  2:8pf  3:10pf
 
-#define SI5351BX_XTAL 25004000          // Crystal freq in Hz
+#define SI5351BX_XTAL 25007440        // Crystal freq in Hz
 #define SI5351BX_MSA  35                // VCOA is at 25mhz*35 = 875mhz
+
+#define SI5351BX_CRYSTAL_CAL_STEP   5   // Crystal frequency calibration step = 5Hz on 25MHz
+#define SI5351_CALIBRATED_CRYSTAL_FREQ  (si5351bx_vcoa / SI5351BX_MSA)
 
 // User program may have reason to poke new values into these 3 RAM variables
 uint32_t si5351bx_vcoa = (SI5351BX_XTAL*SI5351BX_MSA);  // 25mhzXtal calibrate
@@ -947,12 +948,12 @@ void calibration(){
 }
 
 void ADJ_UP(){
-      si5351bx_vcoa = si5351bx_vcoa -175;
+      si5351bx_vcoa = si5351bx_vcoa - (SI5351BX_CRYSTAL_CAL_STEP * SI5351BX_MSA);
       calwrite();
 }
 
 void ADJ_DWN() {
-      si5351bx_vcoa = si5351bx_vcoa +175;
+      si5351bx_vcoa = si5351bx_vcoa + (SI5351BX_CRYSTAL_CAL_STEP * SI5351BX_MSA);
       calwrite();
 }
 
@@ -1313,9 +1314,108 @@ void reset_flash(void) {
 
 
 /*
+    Si5351A related functions
+    Developed by Kazuhisa "Kazu" Terasaki AG6NS
+ */
+
+#define SI5351A_CLK1_CONTROL            17
+#define SI5351A_PLLB_BASE               34
+#define SI5351A_MULTISYNTH1_BASE        50
+#define SI5351A_PLL_RESET               177
+
+#define SI5351A_CLK1_MS1_INT            (1 << 6)
+#define SI5351A_CLK1_MS1_SRC_PLLB       (1 << 5)
+#define SI5351A_CLK1_SRC_MULTISYNTH_1   (3 << 2)
+#define SI5351A_CLK1_IDRV_2MA           (0 << 0)
+
+#define SI5351A_PLL_RESET_PLLB_RST      (1 << 7)
+
+#define PLL_CALCULATION_PRECISION       4
+
+static uint8_t s_regs[8];
+
+inline void si5351a_setup_PLLB(uint8_t mult, uint32_t num, uint32_t denom)
+{
+    uint32_t p1 = 128 * mult + ((128 * num) / denom) - 512;
+    uint32_t p2 = 128 * num - denom * ((128 * num) / denom);
+    uint32_t p3 = denom;
+
+    s_regs[0] = (uint8_t)(p3 >> 8);
+    s_regs[1] = (uint8_t)p3;
+    s_regs[2] = (uint8_t)(p1 >> 16) & 0x03;
+    s_regs[3] = (uint8_t)(p1 >> 8);
+    s_regs[4] = (uint8_t)p1;
+    s_regs[5] = ((uint8_t)(p3 >> 12) & 0xf0) | ((uint8_t)(p2 >> 16) & 0x0f);
+    s_regs[6] = (uint8_t)(p2 >> 8);
+    s_regs[7] = (uint8_t)p2;
+    i2cWriten(SI5351A_PLLB_BASE, s_regs, 8);
+}
+
+// div must be even number
+inline void si5351a_setup_multisynth1(uint32_t div)
+{
+    uint32_t p1 = 128 * div - 512;
+
+    s_regs[0] = 0;
+    s_regs[1] = 1;
+    s_regs[2] = (uint8_t)(p1 >> 16) & 0x03;
+    s_regs[3] = (uint8_t)(p1 >> 8);
+    s_regs[4] = (uint8_t)p1;
+    s_regs[5] = 0;
+    s_regs[6] = 0;
+    s_regs[7] = 0;
+    i2cWriten(SI5351A_MULTISYNTH1_BASE, s_regs, 8);
+
+    i2cWrite(SI5351A_CLK1_CONTROL, (SI5351A_CLK1_MS1_INT | 
+                                    SI5351A_CLK1_MS1_SRC_PLLB | 
+                                    SI5351A_CLK1_SRC_MULTISYNTH_1 | 
+                                    SI5351A_CLK1_IDRV_2MA));
+}
+
+inline void si5351a_reset_PLLB(void)
+{
+    i2cWrite(SI5351A_PLL_RESET, SI5351A_PLL_RESET_PLLB_RST);
+}
+
+// freq is in 28.4 fixed point number, 0.0625Hz resolution
+void si5351a_set_freq(uint32_t freq)
+{
+    #define PLL_MAX_FREQ        900000000
+    #define PLL_MIN_FREQ        600000000
+    #define PLL_MID_FREQ        ((PLL_MAX_FREQ + PLL_MIN_FREQ) / 2)
+    #define PLL_DENOM_MAX       0x000fffff
+
+    uint32_t ms_div = PLL_MID_FREQ / (freq >> PLL_CALCULATION_PRECISION) + 1;
+    ms_div &= 0xfffffffe;   // make it even number
+
+    uint32_t pll_freq = ((uint64_t)freq * ms_div) >> PLL_CALCULATION_PRECISION;
+
+    uint32_t calibrated_crystal_freq = SI5351_CALIBRATED_CRYSTAL_FREQ;
+    uint32_t pll_mult   = pll_freq / calibrated_crystal_freq;
+    uint32_t pll_remain = pll_freq - (pll_mult * calibrated_crystal_freq);
+    uint32_t pll_num    = (uint64_t)pll_remain * PLL_DENOM_MAX / calibrated_crystal_freq;
+    si5351a_setup_PLLB(pll_mult, pll_num, PLL_DENOM_MAX);
+
+    static uint32_t prev_ms_div = 0;
+    if (ms_div != prev_ms_div) {
+        prev_ms_div = ms_div;
+        si5351a_setup_multisynth1(ms_div);
+        si5351a_reset_PLLB();
+    }
+}
+
+
+
+/*
     Audio Wave Length Measurement related functions
     Developed by Kazuhisa "Kazu" Terasaki AG6NS
  */
+
+#define MIN_INPUT_AUDIO_FREQ            190                         // minimum input audio frequency limit is 200Hz  - 5%
+#define MAX_INPUT_AUDIO_FREQ            4200                        // maximum input audio frequency limit is 4000Hz + 5%
+#define UPDATE_VFO_PERIOD               (CPU_CLOCK_FREQ / 250)      // update FSK frequency 250 times/sec. (every 4ms)
+#define NO_SIGNAL_PERIOD_THRESHOLD      (CPU_CLOCK_FREQ / 20)       // no signal detection threshold (50ms)
+#define MIN_SAMPLE_COUNT_FOR_AVERAGING  2                           // minimum sample counts for averaging filter
 
 volatile uint8_t  gMeasuredFullWaveCount = 0;
 volatile uint16_t gTimer1OverflowCounter = 0;
@@ -1393,20 +1493,27 @@ void processAudioInput(bool checkNoSignal)
         }
 
         uint32_t totalWaveLength = currentInputCaptureValue - sLastVFOUpdatedInputCaptureValue;
-        if (totalWaveLength >= UPDATE_VFO_PERIOD) {
-            uint32_t averageWaveLength = (sUpperWaveLenTotal + (sCapturedWaveCount / 2)) / sCapturedWaveCount +
-                                         (sLowerWaveLenTotal + (sCapturedWaveCount / 2)) / sCapturedWaveCount;
+        if (totalWaveLength >= UPDATE_VFO_PERIOD && sCapturedWaveCount >= MIN_SAMPLE_COUNT_FOR_AVERAGING) {
 
-            uint32_t audioFreq = CPU_CLOCK_FREQ / averageWaveLength;
-            if (MIN_INPUT_AUDIO_FREQ <= audioFreq && audioFreq <= MAX_INPUT_AUDIO_FREQ &&
+            // measured audio wave length
+            uint32_t averageWaveLength = ((sUpperWaveLenTotal << PLL_CALCULATION_PRECISION) + (sCapturedWaveCount / 2)) / sCapturedWaveCount +
+                                         ((sLowerWaveLenTotal << PLL_CALCULATION_PRECISION) + (sCapturedWaveCount / 2)) / sCapturedWaveCount;
+            // measured audio frequency
+            uint32_t audioFreq = (CPU_CLOCK_FREQ << (PLL_CALCULATION_PRECISION * 2)) / averageWaveLength;   // frequency is in 28.4 fixed point number, 0.0625Hz resolution
+
+            if (((uint32_t)MIN_INPUT_AUDIO_FREQ << PLL_CALCULATION_PRECISION) <= audioFreq && audioFreq <= ((uint32_t)MAX_INPUT_AUDIO_FREQ << PLL_CALCULATION_PRECISION) &&
                 sLowerWaveLenTotal < sUpperWaveLenTotal && sUpperWaveLenTotal < (sLowerWaveLenTotal << 1))  // sLowerWaveLenTotal < sUpperWaveLenTotal < sLowerWaveLenTotal * 2
             {
                 // found audio signal
                 sLastValidSignalInputCaptureValue = currentInputCaptureValue;
 
                 if (sIsTransmitting) {
-                    si5351bx_setfreq(1, OPfreq + audioFreq);    // update CLK1 frequency
-                    digitalWrite(A1, LOW);                      // disable RX
+                    digitalWrite(A1, LOW);              // disable RX
+                    si5351a_set_freq((OPfreq << PLL_CALCULATION_PRECISION) + audioFreq);    // update CLK1 frequency
+                    if (si5351bx_clken != 0xfd) {
+                        si5351bx_clken = 0xfd;
+                        i2cWrite(3, si5351bx_clken);    // enable CLK1 output
+                    }
                 }
 
                 sIsTransmitting = true;     // set this flag at here so we can ignore the first detected frequency which might include some error
