@@ -7,9 +7,9 @@
 // 4/16/21 fixed 80M start up freq,fixed 17M resistor sense voltage.  
 // 4/21/21 adjusted FSK updating rate for 45.45bps RTTY.
 // 4/25/21 improve resolution of FSK from 1Hz to 0.0625Hz
-// 5/6/21 added firmware rev# to boot up. Lines 210-211 & 218-219  
+// 5/6/21  added firmware rev# to boot up. 
 // 5/6/21 added auto incerment of calibbration tuning
-
+// 6/26/21 fixed no RIT shift on transmit in MultiDC mode
 
 //FT8 fsk mods by Kazuhisa "Kazu" Terasaki AG6NS 
 //Si5351 routine by Jerry Gaffke, KE7ER
@@ -33,7 +33,7 @@
 #define SI5351BX_ADDR 0x60              // I2C address of Si5351   (typical)
 #define SI5351BX_XTALPF 3               // 1:6pf  2:8pf  3:10pf
 
-#define SI5351BX_XTAL 25006000          // Crystal freq in Hz
+#define SI5351BX_XTAL 25000000          // Crystal freq in Hz
 #define SI5351BX_MSA  35                // VCOA is at 25mhz*35 = 875mhz
 
 #define SI5351BX_CRYSTAL_CAL_STEP   5   // Crystal frequency calibration step = 5Hz on 25MHz
@@ -208,7 +208,7 @@ digitalWrite(A1, HIGH);
     digit4 = LED_C;
     digit3 = LED_BLANK;
     digit2 = LED_N_1;
-    digit1 = LED_N_0;
+    digit1 = LED_N_1;
 #endif    
 
 #if FT8_VFO
@@ -216,7 +216,7 @@ digitalWrite(A1, HIGH);
     digit4 = LED_N_8;
     digit3 = LED_BLANK;
     digit2 = LED_N_1;
-    digit1 = LED_N_0; 
+    digit1 = LED_N_1; 
 #endif 
 
 delay(1000);
@@ -296,7 +296,7 @@ void loop() {
 #endif
 
 #if MULTIDC_VFO
-    if (digitalRead,A3==LOW) {
+    if (digitalRead(A3)==LOW) {
         transmit();
     }
 
@@ -345,7 +345,7 @@ void transmit() {
 #if MULTIDC_VFO
 
 void transmit() {
-  if (ritflag == 0) {RITtemp = OPfreq;} 
+ // if (ritflag == 0) {RITtemp = OPfreq;} 
         si5351bx_setfreq(1, RITtemp); 
         while (digitalRead(A3) == LOW){loop;} 
         si5351bx_setfreq(1, OPfreq); //update clock chip with VFO 
@@ -670,6 +670,7 @@ void flip_sideband() {
         OPfreq = RITtemp + 600;
         digit4 = LED_BLANK;
     }
+    PLLwrite(); 
     debounceE(); 
 }
 
