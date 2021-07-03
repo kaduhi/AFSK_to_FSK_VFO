@@ -10,6 +10,7 @@
 // 5/6/21  added firmware rev# to boot up. 
 // 5/6/21 added auto incerment of calibbration tuning
 // 6/26/21 fixed no RIT shift on transmit in MultiDC mode
+// 6/30/21 fixed RIT not initiallized on band change. 
 
 //FT8 fsk mods by Kazuhisa "Kazu" Terasaki AG6NS 
 //Si5351 routine by Jerry Gaffke, KE7ER
@@ -17,10 +18,15 @@
 
 #include <EEPROM.h>
 #include "Wire.h"
-
-
-#define MULTIDC_VFO                     0
-#define FT8_VFO                         1
+//*********************************************************************
+//USE this configuration for MULTI-DC VFO
+#define MULTIDC_VFO                     1
+#define FT8_VFO                         0
+//*********************************************************************
+// Use this configuration for FT-8 VFO
+// #define MULTIDC_VFO                     0
+// #define FT8_VFO                         1
+//*********************************************************************
 
 #define CPU_CLOCK_FREQ                  16000000                    // 16MHz
 
@@ -33,7 +39,7 @@
 #define SI5351BX_ADDR 0x60              // I2C address of Si5351   (typical)
 #define SI5351BX_XTALPF 3               // 1:6pf  2:8pf  3:10pf
 
-#define SI5351BX_XTAL 25000000          // Crystal freq in Hz
+#define SI5351BX_XTAL 25002700          // Crystal freq in Hz
 #define SI5351BX_MSA  35                // VCOA is at 25mhz*35 = 875mhz
 
 #define SI5351BX_CRYSTAL_CAL_STEP   5   // Crystal frequency calibration step = 5Hz on 25MHz
@@ -208,7 +214,7 @@ digitalWrite(A1, HIGH);
     digit4 = LED_C;
     digit3 = LED_BLANK;
     digit2 = LED_N_1;
-    digit1 = LED_N_1;
+    digit1 = LED_N_3;
 #endif    
 
 #if FT8_VFO
@@ -216,7 +222,7 @@ digitalWrite(A1, HIGH);
     digit4 = LED_N_8;
     digit3 = LED_BLANK;
     digit2 = LED_N_1;
-    digit1 = LED_N_1; 
+    digit1 = LED_N_3; 
 #endif 
 
 delay(1000);
@@ -642,7 +648,7 @@ void bigsteps() {
     case 6:
         stepK = Fstep100K;
         d1temp = digit3;
-     
+        digit3 = LED_BLANK; 
         delay(100); 
         digit3 = d1temp;
         break;
@@ -1231,6 +1237,7 @@ void MDC_BAND15() {
     low_band_limit = 21000000;
     high_band_limit = 21500000;
     OPfreq = 21060000;
+    RITtemp = OPfreq;
 }
 
 void MDC_BAND12() {  
@@ -1239,6 +1246,7 @@ void MDC_BAND12() {
     low_band_limit = 24890000;
     high_band_limit = 24990000;
     OPfreq = 24906000;
+    RITtemp = OPfreq;
 }
 
 void MDC_BAND10() {  
@@ -1247,6 +1255,7 @@ void MDC_BAND10() {
     low_band_limit = 28000000;
     high_band_limit = 28500000;
     OPfreq = 28060000;
+    RITtemp = OPfreq;
 }
 
 #endif
