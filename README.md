@@ -35,6 +35,6 @@ While <a href="https://www.instagram.com/p/CJdbAUTDXa9/" target="_blank">tweakin
 
 After <a href="https://groups.io/g/CalQRP/topic/81166950#2034" target="_blank">I posted about my mods to CalQRP group</a>, I was contacted by <a href="https://qrpguys.com/" target="_blank">QRPGuys</a> and they immediately started working on <a href="https://qrpguys.com/qrpguys-digital-fsk-transceiver-iii" target="_blank">the new kit</a> based on my mods.
 
-Then 6 weeks later, they have officially announced the <a href="https://qrpguys.com/qrpguys-digital-fsk-transceiver-iii" target="_blank">QRPGuys AFP-FSK Digital Transceiver III kit</a>. They named this technique "AFP-FSK" (Audio Frequency Processed FSK).
+Then 6 weeks later, they have officially announced the <a href="https://qrpguys.com/qrpguys-digital-fsk-transceiver-iii" target="_blank">QRPGuys AFP-FSK Digital Transceiver III</a> kit, and start selling on May 25th, 2021. They named this technique "AFP-FSK" (Audio Frequency Processed FSK).
 
 <a href="https://groups.io/g/kd1jvdesigns" target="_blank">KD1JV Steve Weber</a> who designed the kit <a href="https://groups.io/g/kd1jvdesigns/topic/82046651#1850" target="_blank">has already ported</a> this "AFP-FSK" technique to his old AD9850 DDS based kit and confirmed it works great.
