@@ -1,16 +1,4 @@
 
-/*Sketch for QRPguys.com  Basic Si5351 Digital VFO    
- * Firmware offerned as open source GNU rules apply. 
- * Written by KD1JV for QRPguys copywrite 2020 
- * Si5153 routine by Jerry Gaffke, KE7ER,
- * set board type to UNO when compiling. 
- * 
- * 
- * 
- */
-
-
-
 #include <EEPROM.h>
 #include "Wire.h"
 
@@ -33,6 +21,8 @@ uint8_t  si5351bx_drive[3] = {0,0,0};   // 0=2ma 1=4ma 2=6ma 3=8ma for CLK 0,1,2
 
 uint8_t  si5351bx_clken = 0xFF;         // Private, all CLK output drivers off
 
+
+//Si5351 si5351;
 #define  SLED5  9
 #define  SLED4  10
 #define  SLED3  11
@@ -68,17 +58,24 @@ uint8_t  si5351bx_clken = 0xFF;         // Private, all CLK output drivers off
 
 
 //flag definitions 
-
-
+#define     RIT_ON 0x01
+#define     RIT_FC 0xfe
 #define     E_sw    2
 #define     U_sw    0
 #define     D_sw    1
+#define     ENC_A   A0
+#define     ENC_B   A1
 
 // register names 
 byte        SRtemp;
 byte        Etemp; 
 byte        BANDpointer; 
 byte        outofband =0; 
+byte        ritflag = 0;
+byte        EncoderFlag = 0;
+byte        c = 0;
+byte        d = 0;
+byte        cLast; 
 
 volatile unsigned long tcount;
 unsigned long        duration=0;
@@ -86,7 +83,7 @@ unsigned long        duration=0;
 int                Eadr;
 volatile byte      sw_inputs ; 
 
-//temp storage of 7 segment display data 
+
 volatile byte      digit1 = 0xff;
 volatile byte      digit2 = 0xff;
 volatile byte      digit3 = 0xff;
@@ -99,18 +96,26 @@ volatile byte      d1temp = 0;
 volatile byte    digit_counter = 1;
     //frequency tuning 
 int         stepSize;   // tuning rate pointer 
+int         tempSS; 
 long int    stepK;      // temp storage of freq tuning step
+long int    tempSK; 
 
 long int    Fstep10  = 10 ;                // 10 Hz step
 long int    Fstep100 = 100;
 long int    Fstep1K =  1000;
 long int    Fstep5K =  5000;
+long int    Fstep10K = 10000;
 long int    Fstep100K = 100000;
-                                        
-unsigned long  temp1;
-unsigned long  frequency;
-unsigned long  freq_result;  
-unsigned long  OPfreq;
+                                          
+//encoder 
+
+
+unsigned  long  temp1;
+unsigned  long frequency;
+unsigned  long freq_result;  
+unsigned  long OPfreq;
+unsigned  long  RITtemp; 
+unsigned  long  RITresult;
 volatile unsigned long   time1;
 volatile unsigned long   time0;
 unsigned long   temp ; 
@@ -131,7 +136,12 @@ void setup() {
 
 DDRB = 0xff;
 DDRD = 0Xff; 
-   
+pinMode(A3,INPUT_PULLUP);
+pinMode(A0, INPUT_PULLUP);
+pinMode(A1, INPUT_PULLUP);
+
+
+     
       noInterrupts();
       TCCR1A = 0;
       TCCR1B = 0;
@@ -143,28 +153,32 @@ DDRD = 0Xff;
       interrupts();   
 
       
-      si5351bx_init(); //initialize the Si5351 chip 
+      si5351bx_init(); 
       cal_data();    //load calibration data  
-      stepK = Fstep1K ; //default tuning rate
-      stepSize = 3; 
+      stepK = Fstep100 ; //default tuning rate
+      stepSize = 2; 
       delay(1000); 
-      int_band();  //get the intial band
+      int_band();
       delay(1000); //let things settle down a bit
  
       displayfreq();
       PLLwrite();
-      time0 = tcount; //clear the counter
+      time0 = tcount;
 }
 
 
 void loop() {
   // test for switch closed
        
-        if (bitRead(sw_inputs, E_sw) == LOW) {timedswitch(); debounceE();}
-           
+        if (bitRead(sw_inputs, E_sw) == LOW) {timedswitch(); debounceE();}         
         if (bitRead(sw_inputs, U_sw) == LOW) {Tune_UP();} //test tune up flag
         if (bitRead(sw_inputs, D_sw) == LOW) {Tune_DWN();} //test tune down flag   
+        if (A3==LOW) {transmit();}
+        if (EncoderFlag == 1) {Tune_UP();} //test tune up flag
+        if (EncoderFlag == 2) {Tune_DWN();} //test tunr down flag 
+
 }   
+
 
 //**************************************************************
 //end of switch polling loop
@@ -182,59 +196,89 @@ void debounceD(){
     while (bitRead(sw_inputs, D_sw) == LOW) {delay(1);} 
 }
 
+void transmit() {
+        si5351bx_setfreq(0,RITtemp);
+        si5351bx_setfreq(1,RITtemp); 
+        while (A3 == LOW){loop;} 
+      si5351bx_setfreq(0,OPfreq); //update clock chip with VFO frequency.
+      si5351bx_setfreq(1,OPfreq); //update clock chip with VFO 
+}
+
+
 void timedswitch(){  
     duration = 0;
     time0 = tcount;
   do {time1 = tcount; duration = time1- time0; //calculate how long the button has been pushed
    if (duration == 10000) {digit5 = LED_N_6; digit4 = LED_n; digit3 = 0x00; digit2 = 0x00; digit1 = 0x00;}
    if (duration == 50000) {digit5 = LED_C; digit4 = LED_A; digit3 = LED_L; digit2= 0x00; digit1 = 0x00;}
-   
+   if (duration == 2000) {digit5 = LED_r; digit4 = 0x00; digit3 = 0x00; digit2 = 0x00; digit1 = 0x00;} 
   }
   while (bitRead(sw_inputs,E_sw) !=1);
     duration = time1 - time0;
   
     if (duration > 50000) {calibration();duration = 0;}
     if (duration > 10000) {changeBand(); duration = 0;}
-    if (duration > 500)  {nextFstep(); duration = 0;}
+    if (duration > 2000)  {RIT(); duration =0;}
+    if (duration > 100)  {nextFstep(); duration = 0;}
 }
 
 
 void  Tune_UP() {
       FREQ_incerment();
-      delay(250);
+      delay(150);
+      
+//      debounceU();
 }
 
 void Tune_DWN() {    
       FREQ_decerment();
-      delay(250);  
+      delay(150); 
+ //     debounceD();   
 }
 
 
 // adjust the operating frequency
 void FREQ_incerment() {
+      EncoderFlag = 0;
       if (OPfreq >= high_absolute_limit) {return;} 
       OPfreq  = OPfreq + stepK;  //add frequenc tuning step to frequency word
       outofband = 0;
       if (OPfreq > high_band_limit) {outofband =1;} //band tuning limits
       if (OPfreq < low_band_limit) {outofband = 1;}
-      displayfreq();
+      if (ritflag & RIT_ON == 1){RITdisplay();}
+      else displayfreq();
       PLLwrite();    
 }
 
 void FREQ_decerment() {
+      EncoderFlag = 0; 
       if (OPfreq <= low_absolute_limit) {return;} 
       OPfreq  = OPfreq - stepK;
       outofband = 0;
       if (OPfreq < low_band_limit) {outofband = 1;}
       if (OPfreq > high_band_limit) {outofband =1;} 
-      displayfreq();
+      if (ritflag & RIT_ON == 1){RITdisplay();}
+      else displayfreq();
       PLLwrite(); 
 }
 
 //toggle tuning step rate
 void  nextFstep () {
+
+if    (ritflag == 1) {flip_sideband();}
+else  incStep();
+}
+
+void incStep(){ 
+if (outofband == 1) {bigsteps();}
+else allsteps();
+}
+
+
+void allsteps() {
+  
     ++ stepSize ;
-    if (stepSize == 5) {(stepSize = 1);}
+    if (stepSize == 7) {(stepSize = 1);}
     
 switch(stepSize) {
      case 1:
@@ -263,22 +307,149 @@ switch(stepSize) {
 
        case 4:
           stepK = Fstep5K;
+          d1temp = digit3;
+          digit3 = 0x00;  
+          delay(100); 
+          digit3 = d1temp;
+          delay(100);
+          digit3 = 0x00;
+          delay(100);
+          digit3 = d1temp;
+          break;    
+
+ case 5:
+          stepK = Fstep10K;
           d1temp = digit4;
           digit4 = 0x00;  
           delay(100); 
           digit4 = d1temp;
-          break;    
+          break;
 
- case 5:
+ case 6:
           stepK = Fstep100K;
           d1temp = digit5;
           digit5 = 0x00;  
           delay(100); 
           digit5 = d1temp;
-          break;              
+          break;
+                        
                 }
 }
 
+void bigsteps() {
+    ++ stepSize ;
+    if (stepSize == 7) {(stepSize = 4);}
+    
+switch(stepSize) {
+case 1: break;
+case 2: break;
+case 3:  stepK = Fstep1K;
+          d1temp = digit1;
+          digit1 = 0x00;  
+          delay(100); 
+          digit1 = d1temp;
+          break; 
+
+
+
+break;  
+case 4:
+          stepK = Fstep5K;
+          d1temp = digit1;
+          digit1 = 0x00;  
+          delay(100); 
+          digit1 = d1temp;
+          delay(100);
+          digit1 = 0x00;
+          delay(100);
+          digit1 = d1temp;
+          break;    
+
+ case 5:
+          stepK = Fstep10K;
+          d1temp = digit4;
+          digit2 = 0x00;  
+          delay(100); 
+          digit2 = d1temp;
+          break;
+
+ case 6:
+          stepK = Fstep100K;
+          d1temp = digit5;
+          digit3 = 0x00;  
+          delay(100); 
+          digit3 = d1temp;
+          break;
+}
+}
+
+
+void flip_sideband() {
+if (OPfreq > RITtemp){OPfreq = RITtemp - 600; digit4 = LED_neg;}
+  else {OPfreq = RITtemp + 600; digit4 = LED_BLANK;}
+  debounceE(); 
+}
+
+
+void RIT() {
+ 
+    if (ritflag == 1){RIText();}
+    else RITenable();
+}
+
+void RITenable(){
+    ritflag = 1;
+    tempSS = stepSize;
+    tempSK = stepK; 
+    stepSize = 1;
+    stepK = 10; 
+    RITtemp = OPfreq;
+   if (outofband == 0)  {OPfreq = RITtemp +600;} 
+    PLLwrite();
+    RITdisplay();
+    debounceE();
+}
+
+void RIText() {
+  
+    ritflag =0;
+    stepK = tempSK;
+    stepSize = tempSS; 
+    OPfreq = RITtemp;
+    PLLwrite();
+    displayfreq();
+    debounceE();
+}
+
+void RITdisplay() {
+if (RITtemp >= OPfreq) 
+{
+  RITresult = RITtemp - OPfreq;
+  digit4 = LED_neg;
+  }
+else 
+  {
+    RITresult = OPfreq - RITtemp; 
+    digit4 = 0x00;   
+    }
+     
+        frequency = RITresult;
+        freq_result = frequency%10000;
+        freq_result = freq_result/1000;
+        hex2seg(); 
+        digitX = digitX+ 0x20;
+        digit3 = digitX;
+        freq_result = frequency%1000;
+        freq_result = freq_result/100;
+        hex2seg(); 
+        digit2 = digitX;
+        freq_result = frequency%100;
+        freq_result = freq_result/10;
+         hex2seg();
+        digit1 = digitX;    
+ 
+  
+}
 
 
 ////////////////////////////////////////////////
@@ -307,8 +478,7 @@ void    displayfreq()
           hex2seg();
           digitX = digitX + 0x20;
           digit4 = digitX;
-
-            
+         
         freq_result = frequency%1000000;     //get the 100,000 kHz digit by first getting the remainder 
         freq_result = freq_result / 100000;  //divide the remainder by 100,000 to get the MSD
         hex2seg();                           //convert the result to the 7 segment code
@@ -384,20 +554,21 @@ void TIMER1_SERVICE_ROUTINE()
           ++tcount;
         
         ++ digit_counter;
-        if (digit_counter == 7 ) {(digit_counter = 1);}
+        if (digit_counter == 6 ) {(digit_counter = 1);}
        
 switch(digit_counter) {
   
             case 1: 
-            digitalWrite(8, HIGH); 
-            DDRD = 0xff;
+            digitalWrite(SLED5, HIGH); 
+            readswitches(); 
             PORTD = digit1;
             digitalWrite(SLED1, LOW);
            
             break;
           
           case 2: 
-            digitalWrite(SLED1, HIGH); 
+            digitalWrite(SLED1, HIGH);
+             readswitches();  
             PORTD = digit2;
             digitalWrite(SLED2, LOW);
            
@@ -405,36 +576,53 @@ switch(digit_counter) {
         
          case 3:  
             digitalWrite(SLED2, HIGH); 
+             readswitches(); 
             PORTD = digit3;
             digitalWrite(SLED3, LOW);
             break;
         
           case 4: 
             digitalWrite(SLED3, HIGH); 
-          
+           readswitches(); 
             PORTD = digit4;
             digitalWrite(SLED4, LOW);
             break;
 
           case 5: 
-            digitalWrite(SLED4, HIGH); 
+            digitalWrite(SLED4, HIGH);
+             readswitches();  
             PORTD = digit5;
             digitalWrite(SLED5, LOW);
             break;
-              
-         
-          case 6:                         //read the switches and encoder here
-             digitalWrite(SLED5, HIGH);   
-              DDRD = 0x00;
-              PORTD= 0Xff; 
-            digitalWrite(8, LOW);   
-       for (int i = 0; i < 5; i++) {sw_inputs = PIND;} //read the switches 4 times to debounce 
-            digitalWrite(8, HIGH); 
-            
-         break;  
         }
         SREG= cREG; 
 }
+
+void readswitches() {                         //read the switches and encoder here
+               
+              DDRD = 0x00;
+              PORTD= 0Xff; 
+            digitalWrite(8, LOW); 
+            sw_inputs = PIND; 
+            digitalWrite(8, HIGH); 
+            DDRD =0xff;
+            c = digitalRead(ENC_A);  //read encoder clock bit
+            if (c !=cLast){encoder();} //call if changed  
+            
+        }
+                                 
+     // encoder, test for direction only on 0 to 1 clock state change
+     
+    void encoder()      {
+        if (cLast ==0){
+        d = digitalRead(ENC_B);    
+          if ( d == LOW ) {EncoderFlag = 2;}          //if low
+        
+        else {EncoderFlag = 1;}          //if high
+              
+                       }
+         cLast = c;            //store new state of clock  
+                        }
 
 
 /*
@@ -442,11 +630,9 @@ switch(digit_counter) {
  */
 
 void PLLwrite() {   
-      si5351bx_setfreq(0,OPfreq); //update clock chip with VFO frequency. 
+      si5351bx_setfreq(0,OPfreq); //update clock chip with VFO frequency.
+      si5351bx_setfreq(1,OPfreq); //update clock chip with VFO 
 }
-
-
-            
 
 /*
  * Ref oscillator frequency is calibrated first
@@ -530,6 +716,7 @@ void changeBand(){
       
     do {
       if (bitRead(sw_inputs,U_sw) !=1) {nextband();}
+      if (bitRead(sw_inputs,D_sw) !=1) {nextbandD();}
     }
     while (bitRead(sw_inputs,E_sw) !=0);
 
@@ -543,11 +730,17 @@ void changeBand(){
 
 void nextband () {
     ++BANDpointer ;
-    if (BANDpointer == 8) {(BANDpointer = 1);}
+    if (BANDpointer == 11) {(BANDpointer = 1);}
     get_band();
     debounceU(); 
 }
 
+void nextbandD() {
+   --BANDpointer ;
+    if (BANDpointer == 0) {(BANDpointer = 10);}
+    get_band();
+    debounceD(); 
+}
 
 void int_band() {
   BANDpointer = EEPROM.read(0);
@@ -561,29 +754,46 @@ void int_band() {
 
 void get_band() {
 switch(BANDpointer) {
-      case 1: 
+case 1: 
       BAND16();
       break;
-      case 2:
+      
+case 2:
       BAND80();
-      break; 
-      case 3: 
+      break;
+
+case 3: 
       BAND60() ;
       break ;
-      case 4: 
+      
+case 4: 
       BAND40() ;
       break ;
-      case 5: 
+      
+case 5: 
       BAND30() ;
       break ;
-       case 6: 
+      
+case 6: 
       BAND20() ;
       break ;
-       case 7: 
+      
+case 7: 
       BAND17() ;
       break ;
-}
 
+case 8:
+      BAND15() ;
+      break;
+
+case 9:
+      BAND12();
+      break;
+
+case 10:
+      BAND10();
+      break;
+}
 }
 
 void BAND16() {  
@@ -607,7 +817,7 @@ void BAND60() {
     digit1 = LED_N_0;
     low_band_limit = 5351500;
     high_band_limit = 5366500;
-    OPfreq = 5357000;    
+    OPfreq = 535700;    
 }
 
 void BAND40() { 
@@ -623,7 +833,7 @@ void BAND30() {
     digit1 = LED_N_0;
     low_band_limit = 10100000;
     high_band_limit = 10150000;
-    OPfreq = 10136000; 
+    OPfreq = 10130000; 
 }
 
 void BAND20() {  
@@ -642,6 +852,29 @@ void BAND17() {
     OPfreq = 18100000;
 }
 
+void BAND15() {  
+    digit2 = LED_N_1;
+    digit1 = LED_N_5; 
+    low_band_limit = 21000000;
+    high_band_limit = 21500000;
+    OPfreq = 21060000;
+}
+
+void BAND12() {  
+    digit2 = LED_N_1;
+    digit1 = LED_N_2; 
+    low_band_limit = 24890000;
+    high_band_limit = 24990000;
+    OPfreq = 24906000;
+}
+
+void BAND10() {  
+    digit2 = LED_N_1;
+    digit1 = LED_N_0; 
+    low_band_limit = 28000000;
+    high_band_limit = 28500000;
+    OPfreq = 28060000;
+}
 
 //this compact and stand alone si5351 frequency calculation routines 
 //are Copyright 2017, Jerry Gaffke, KE7ER, under the GNU General Public License 3.0 
@@ -677,10 +910,10 @@ void si5351bx_setfreq(uint8_t clknum, uint32_t fout) {  // Set a CLK to fout Hz
             BB0(msxp1), BB2(msxp3p2top), BB1(msxp2), BB0(msxp2) };
         i2cWriten(42+(clknum*8), vals, 8);  // Write to 8 msynth regs
         i2cWrite(16+clknum, 0x0C|si5351bx_drive[clknum]);   // use local msynth
-  //      si5351bx_clken &= ~(1<<clknum);     // Clear bit to enable clock
+        si5351bx_clken &= ~(1<<clknum);     // Clear bit to enable clock
     }
-        if (clknum == 0) {si5351bx_clken = 0xfe;} //turn on the approperate clock output. 
-        if (clknum == 1) {si5351bx_clken = 0xfd;} 
+ //       if (clknum == 0) {si5351bx_clken = 0xfe;} //turn on the approperate clock output. 
+ //       if (clknum == 1) {si5351bx_clken = 0xfd;} 
         i2cWrite(3, si5351bx_clken);        // Enable/disable clock
 }
 
