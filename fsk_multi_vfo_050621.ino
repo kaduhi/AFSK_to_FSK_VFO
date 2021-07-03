@@ -7,6 +7,9 @@
 // 4/16/21 fixed 80M start up freq,fixed 17M resistor sense voltage.  
 // 4/21/21 adjusted FSK updating rate for 45.45bps RTTY.
 // 4/25/21 improve resolution of FSK from 1Hz to 0.0625Hz
+// 5/6/21 added firmware rev# to boot up. Lines 210-211 & 218-219  
+// 5/6/21 added auto incerment of calibbration tuning
+
 
 //FT8 fsk mods by Kazuhisa "Kazu" Terasaki AG6NS 
 //Si5351 routine by Jerry Gaffke, KE7ER
@@ -30,7 +33,7 @@
 #define SI5351BX_ADDR 0x60              // I2C address of Si5351   (typical)
 #define SI5351BX_XTALPF 3               // 1:6pf  2:8pf  3:10pf
 
-#define SI5351BX_XTAL 25007440        // Crystal freq in Hz
+#define SI5351BX_XTAL 25006000          // Crystal freq in Hz
 #define SI5351BX_MSA  35                // VCOA is at 25mhz*35 = 875mhz
 
 #define SI5351BX_CRYSTAL_CAL_STEP   5   // Crystal frequency calibration step = 5Hz on 25MHz
@@ -105,7 +108,7 @@ byte        BANDpointer;
 byte        outofband =0;
 byte        shift_display =0;  
 byte        ritflag = 0;
-byte        IF_flag = 0; 
+//byte        IF_flag = 0; 
 byte        EncoderFlag = 0;
 byte        c = 0;
 byte        d = 0;
@@ -148,7 +151,7 @@ unsigned  long  temp1;
 unsigned  long  frequency;
 unsigned  long  freq_result;  
 unsigned  long  OPfreq;
-unsigned  long  IF_FREQ;
+//unsigned  long  IF_FREQ;
 unsigned  long  RX_FREQ; 
 unsigned  long  RITtemp; 
 unsigned  long  temp ; 
@@ -200,11 +203,29 @@ digitalWrite(A1, HIGH);
     TIMSK2 |= (1 << OCIE2A);  // enable Output Compare Match A Interrupt
     interrupts();   
 
+#if MULTIDC_VFO
+    digit5 = LED_d;
+    digit4 = LED_C;
+    digit3 = LED_BLANK;
+    digit2 = LED_N_1;
+    digit1 = LED_N_0;
+#endif    
+
+#if FT8_VFO
+    digit5 = LED_F;
+    digit4 = LED_N_8;
+    digit3 = LED_BLANK;
+    digit2 = LED_N_1;
+    digit1 = LED_N_0; 
+#endif 
+
+delay(1000);
+
+
+
     si5351bx_init(); 
     cal_data();    //load calibration data  
-   
-    delay(1000); 
-
+  
 #if MULTIDC_VFO 
     stepK =Fstep100;
     stepSize = 2;
@@ -215,7 +236,11 @@ digitalWrite(A1, HIGH);
 #if FT8_VFO
     stepK = Fstep1K; //default tuning rate
     stepSize = 3; 
-    FT8_band_select();  
+    FT8_band_select(); 
+#endif  
+
+#if FT8_VFO
+     
     // initialize analog comparator
     ADCSRA = 0x00;          // ADEN=0
     ADCSRB = (1 << ACME);   // enable Analog Comparator Multiplexer
@@ -235,7 +260,7 @@ digitalWrite(A1, HIGH);
     TIMSK1 |= (1 << ICIE1) | (1 << TOIE1);   // enable Input Capture Interrupt, enable Timer1 Overflow Interrupt
     interrupts();
 #endif 
-
+  
 
     delay(1000); //let things settle down a bit
     displayfreq();
@@ -352,9 +377,7 @@ void timedswitch() {
             digit1 = LED_BLANK;
         }
         
-        
-
-        
+               
 #if MULTIDC_VFO  
 
         if (duration == 3000) {// band
@@ -638,8 +661,6 @@ void  toggleDS(){
 
 #if MULTIDC_VFO 
 void flip_sideband() {
-
-    if (IF_flag == 1) return;
     
     if (OPfreq > RITtemp) {
         OPfreq = RITtemp - 600;
@@ -669,9 +690,8 @@ void RITenable(){
     stepSize = 1;
     stepK = 10; 
     RITtemp = OPfreq;
-    if (IF_flag == 0) {
-        OPfreq = RITtemp +600;
-    } 
+    OPfreq = RITtemp +600;
+    
     PLLwrite();
     RITdisplay();
     debounceE();
@@ -925,11 +945,9 @@ void calibration(){
     while (bitRead(sw_inputs, E_sw) == HIGH) {
         if (bitRead(sw_inputs, U_sw) == LOW) {
             ADJ_UP();
-            debounceU();
         }
         if (bitRead(sw_inputs, D_sw) == LOW) {
             ADJ_DWN();
-            debounceD();
         } 
     }
 
@@ -960,8 +978,10 @@ void ADJ_DWN() {
 void calwrite() {
       si5351bx_setfreq(0, OPfreq);
 #if  MULTIDC_VFO
-      if (IF_flag == 0)si5351bx_setfreq(1, OPfreq);
+      si5351bx_setfreq(1, OPfreq);
 #endif       
+
+    delay (100); 
 }
 
 void cal_data(){
