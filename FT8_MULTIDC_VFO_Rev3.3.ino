@@ -20,12 +20,12 @@
 #include "Wire.h"
 //*********************************************************************
 //USE this configuration for MULTI-DC VFO
-#define MULTIDC_VFO                     1
-#define FT8_VFO                         0
+//#define MULTIDC_VFO                     1
+//#define FT8_VFO                         0
 //*********************************************************************
 // Use this configuration for FT-8 VFO
-// #define MULTIDC_VFO                     0
-// #define FT8_VFO                         1
+#define MULTIDC_VFO                     0
+#define FT8_VFO                         1
 //*********************************************************************
 
 #define CPU_CLOCK_FREQ                  16000000                    // 16MHz
