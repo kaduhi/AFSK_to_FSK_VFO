@@ -1751,7 +1751,7 @@ public:
   #define I2C_DELAY   4    // Determines I2C Speed (2=939kb/s (too fast!!); 3=822kb/s; 4=731kb/s; 5=658kb/s; 6=598kb/s). Increase this value when you get I2C tx errors (E05); decrease this value when you get a CPU overload (E01). An increment eats ~3.5% CPU load; minimum value is 3 on my QCX, resulting in 84.5% CPU load
 #else //AFSK_TO_FSK_VFO
   #define I2C_DELAY         6
-  #define I2C_DELAY_RISE    7
+  #define I2C_DELAY_RISE    1   // works, but if put probe no longer work
 #endif //!AFSK_TO_FSK_VFO
 #endif
   #define I2C_DDR DDRC     // Pins for the I2C bit banging
@@ -1768,7 +1768,8 @@ public:
   #define I2C_SCL_HI() I2C_DDR &= ~I2C_SCL; DELAY(I2C_DELAY);
   #define I2C_SCL_LO() I2C_DDR |=  I2C_SCL; DELAY(I2C_DELAY);
 #else //AFSK_TO_FSK_VFO
-  #define I2C_SCL_HI() I2C_DDR &= ~I2C_SCL; DELAY(I2C_DELAY_RISE);
+  #define I2C_SCL_HI() I2C_DDR &= ~I2C_SCL; while (!I2C_SCL_GET()); DELAY(I2C_DELAY_RISE);
+  #define I2C_SCL_HI_NO_WAIT() I2C_DDR &= ~I2C_SCL;
   #define I2C_SCL_LO() I2C_DDR |=  I2C_SCL;
 #endif //!AFSK_TO_FSK_VFO
 
@@ -1833,12 +1834,25 @@ public:
     SendBit(data, 1 << 1);
     SendBit(data, 1 << 0);
     I2C_SDA_HI();  // recv ACK
+#if !AFSK_TO_FSK_VFO
     DELAY(I2C_DELAY);
+#else //AFSK_TO_FSK_VFO
+    for (uint8_t i = 6; i > 0; i--) {
+        if (!I2C_SDA_GET()) break;
+    }
+#endif //!AFSK_TO_FSK_VFO
     I2C_SCL_HI();
+#if AFSK_TO_FSK_VFO
+    //bool ack = !I2C_SDA_GET();
+#endif //AFSK_TO_FSK_VFO
     I2C_SCL_LO();
   }
   inline uint8_t RecvBit(uint8_t mask){
+#if !AFSK_TO_FSK_VFO
     I2C_SCL_HI();
+#else //AFSK_TO_FSK_VFO
+    I2C_SCL_HI_NO_WAIT();
+#endif //!AFSK_TO_FSK_VFO
     uint16_t i = 60000;
     for(;!(I2C_SCL_GET()) && i; i--);  // wait util slave release SCL to HIGH (meaning data valid), or timeout at 3ms
     //if(!i){ lcd.setCursor(0, 1); lcd.print(F("E07 I2C timeout")); }
@@ -1861,10 +1875,17 @@ public:
     } else {
       I2C_SDA_LO();  // ACK
     }
+#if !AFSK_TO_FSK_VFO
     DELAY(I2C_DELAY);
     I2C_SCL_HI();
     I2C_SDA_HI();    // restore SDA for read
     I2C_SCL_LO();
+#else //AFSK_TO_FSK_VFO
+    DELAY(I2C_DELAY);
+    I2C_SCL_HI();
+    I2C_SCL_LO();
+    I2C_SDA_HI();    // restore SDA for read
+#endif //!AFSK_TO_FSK_VFO
     return data;
   }
   inline void resume(){
