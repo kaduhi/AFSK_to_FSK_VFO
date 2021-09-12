@@ -1928,13 +1928,20 @@ public:
   #define FAST __attribute__((optimize("Ofast")))
 
   volatile uint32_t fxtal = F_XTAL;
+#if AFSK_TO_FSK_VFO
+  volatile uint32_t invfxtal50 = ((uint64_t)1 << 50) / F_XTAL;
+#endif //AFSK_TO_FSK_VFO
 
 #define NEW_TX 1
 #ifdef NEW_TX
   inline void FAST freq_calc_fast(int16_t df)  // note: relies on cached variables: _msb128, _msa128min512, _div, _fout, fxtal
   {
     #define _MSC  0x10000
+#if !AFSK_TO_FSK_VFO
     uint32_t msb128 = _msb128 + ((int64_t)(_div * (int32_t)df) * _MSC * 128) / fxtal;
+#else //AFSK_TO_FSK_VFO
+    uint32_t msb128 = _msb128 + (((int64_t)(_div * (int32_t)df) * invfxtal50) >> 27);
+#endif //!AFSK_TO_FSK_VFO
 
     uint16_t msp1 = _msa128min512 + msb128 / _MSC; // = 128 * _msa + msb128 / _MSC - 512;
     uint16_t msp2 = msb128; // = msb128 % _MSC;  assuming MSC is covering exact uint16_t so the mod operation can dissapear (and the upper BB2 byte) // = msb128 - msb128/_MSC * _MSC;
@@ -2335,15 +2342,27 @@ volatile int8_t volume = 12;
 
 // This is the ADC ISR, issued with sample-rate via timer1 compb interrupt.
 // It performs in real-time the ADC sampling, calculation of SSB phase-differences, calculation of SI5351 frequency registers and send the registers to SI5351 over I2C.
+#if AFSK_TO_FSK_VFO
+#define MEASURE_PROCESS_TIME        0
+#endif //AFSK_TO_FSK_VFO
 static int16_t _adc;
 void dsp_tx()
 { // jitter dependent things first
 #ifdef MULTI_ADC  // SSB with multiple ADC conversions:
+#if AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
+  I2C_SCL_LO();
+#endif //AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
   int16_t adc;                         // current ADC sample 10-bits analog input, NOTE: first ADCL, then ADCH
   adc = ADC;
   ADCSRA |= (1 << ADSC);
   //OCR1BL = amp;                        // submit amplitude to PWM register (actually this is done in advance (about 140us) of phase-change, so that phase-delays in key-shaping circuit filter can settle)
+#if AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
+  I2C_SCL_HI();
+#endif //AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
   si5351.SendPLLRegisterBulk();       // submit frequency registers to SI5351 over 731kbit/s I2C (transfer takes 64/731 = 88us, then PLL-loopfilter probably needs 50us to stabalize)
+#if AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
+  I2C_SCL_LO();
+#endif //AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
 #ifdef QUAD
 #ifdef TX_CLK0_CLK1
   si5351.SendRegister(16, (quad) ? 0x1f : 0x0f);  // Invert/non-invert CLK0 in case of a huge phase-change
@@ -2355,10 +2374,22 @@ void dsp_tx()
   OCR1BL = amp;                      // submit amplitude to PWM register (takes about 1/32125 = 31us+/-31us to propagate) -> amplitude-phase-alignment error is about 30-50us
   adc += ADC;
 ADCSRA |= (1 << ADSC);  // causes RFI on QCX-SSB units (not on units with direct biasing); ENABLE this line when using direct biasing!!
+#if AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
+  I2C_SCL_HI_NO_WAIT();
+#endif //AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
   int16_t df = ssb(_adc >> MIC_ATTEN); // convert analog input into phase-shifts (carrier out by periodic frequency shifts)
+#if AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
+  I2C_SCL_LO();
+#endif //AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
   adc += ADC;
   ADCSRA |= (1 << ADSC);
+#if AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
+  I2C_SCL_HI_NO_WAIT();
+#endif //AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
   si5351.freq_calc_fast(df);           // calculate SI5351 registers based on frequency shift and carrier frequency
+#if AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
+  I2C_SCL_LO();
+#endif //AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
   adc += ADC;
   ADCSRA |= (1 << ADSC);
   //_adc = (adc/4 - 512);
@@ -2388,6 +2419,9 @@ ADCSRA |= (1 << ADSC);  // causes RFI on QCX-SSB units (not on units with direct
   if(!mox) return;
   OCR1AL = (adc << (mox-1)) + 128;  // TX audio monitoring
 #endif
+#if AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
+  I2C_SCL_HI_NO_WAIT();
+#endif //AFSK_TO_FSK_VFO && MEASURE_PROCESS_TIME
 }
 
 //line#2155
@@ -2548,6 +2582,7 @@ inline void si5351bx_setfreq(uint8_t clknum, uint32_t fout) {
 
 inline void setCalibratedXtalFrequency(uint32_t calibrated_xtal_freq) {
     si5351.fxtal = calibrated_xtal_freq;
+    si5351.invfxtal50 = ((uint64_t)1 << 50) / calibrated_xtal_freq;
 }
 
 inline void changeModeToTX(void) {
