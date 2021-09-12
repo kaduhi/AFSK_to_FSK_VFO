@@ -2219,7 +2219,7 @@ const int16_t _F_SAMP_TX = (F_MCU * 4800LL / 20000000);  // Actual ADC sample-ra
 #endif
 #define _UA  600 //=(_FSAMP_TX)/8 //(_F_SAMP_TX)      //360  // unit angle; integer representation of one full circle turn or 2pi radials or 360 degrees, should be a integer divider of F_SAMP_TX and maximized to have higest precision
 #else //AFSK_TO_FSK_VFO
-#define F_SAMP_TX   4000
+#define F_SAMP_TX   5000
 #define _F_SAMP_TX  F_SAMP_TX
 #define _UA         (_F_SAMP_TX / 8)
 #endif //!AFSK_TO_FSK_VFO
