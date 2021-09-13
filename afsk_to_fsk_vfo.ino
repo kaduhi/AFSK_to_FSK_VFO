@@ -1792,13 +1792,17 @@ public:
     resume();  //prepare for I2C
 #endif
     I2C_SCL_LO();
+#if !AFSK_TO_FSK_VFO
     I2C_SDA_HI();
+#endif //!AFSK_TO_FSK_VFO
   }
   inline void stop(){
     I2C_SDA_LO();   // ensure SDA is LO so STOP-condition can be initiated by pulling SCL HI (in case of ACK it SDA was already LO, but for a delayed ACK or NACK it is not!)
     I2C_SCL_HI();
     I2C_SDA_HI();
+#if !AFSK_TO_FSK_VFO
     I2C_DDR &= ~(I2C_SDA | I2C_SCL); // prepare for a start: pull-up both SDA, SCL
+#endif //!AFSK_TO_FSK_VFO
 #ifndef RS_HIGH_ON_IDLE
     suspend();
 #endif
