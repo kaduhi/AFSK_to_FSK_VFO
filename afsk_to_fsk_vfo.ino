@@ -2562,7 +2562,7 @@ void initSSBTX(void) {
     TCCR1B = 0;
     TCCR1C = 0;
     TCNT1 = 0;
-    TCCR1B = (1 << WGM12) | (1 << CS11); // CTC mode, CS=0b011 (16MHz / 8)
+    TCCR1B = (1 << WGM12) | (1 << CS11); // CTC mode, CS=0b010 (16MHz / 8)
     fs = F_SAMP_TX;
     uint16_t ocr = ((F_CPU / 8) / fs) - 1;   // OCRn = (F_CPU / pre-scaler / fs) - 1;
     OCR1A = ocr;
