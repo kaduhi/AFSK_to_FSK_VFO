@@ -246,25 +246,9 @@ delay(1000);
 #endif  
 
 #if FT8_VFO
-     
-    // initialize analog comparator
-    ADCSRA = 0x00;          // ADEN=0
-    ADCSRB = (1 << ACME);   // enable Analog Comparator Multiplexer
-    ADMUX = 0x02;           // MUX=0b0010 (ADC2)
-    ACSR = (1 << ACBG) | (1 << ACI) | (1 << ACIS1) | (0 << ACIS0);   // enable Bandgap Voltage Reference, clear Analog Comparator Interrupt flag, ACIS=0b10 (Comparator Interrupt on Falling Output Edge)
-    //ACSR |= (1 << ACIE);   // enable Analog Comparator Interrupt
-
-    // initialize TIMER1
-    noInterrupts();
-    TCCR1A = 0;
-    TCCR1B = 0;
-    TCCR1C = 0;
-    TCCR1B = (1 << ICNC1) | (0 << ICES1) | (1 << CS10);// enable Input Capture Noise Canceler, Input Capture Edge Select (Falling), CS=0b001 (16MHz / 1)
-    ICR1 = 0;
-    ACSR |= (1 << ACIC);      // enable Analog Comparator Input Capture
-    TIFR1 = 0x027;            // clear interrupt flags
-    TIMSK1 |= (1 << ICIE1) | (1 << TOIE1);   // enable Input Capture Interrupt, enable Timer1 Overflow Interrupt
-    interrupts();
+    // initialize AFP
+    // this will initialize the Analog Comparator and TIMER1
+    initAFP();
 #endif 
   
 
@@ -1437,6 +1421,59 @@ void si5351a_set_freq(uint32_t freq)
 
 
 /*
+    Bridging glue functions between AFP and QRPGuys AFP-FSK Digital Transceiver III specific code
+    Developed by Kazuhisa "Kazu" Terasaki AG6NS
+ */
+
+inline void switchToTX(void)
+{
+    // switch to TX mode
+    digitalWrite(A1, LOW);              // disable RX
+
+    // may need little delay here to wait the RX switch is completely turned off
+
+    // enable CLK1 (TX) and disable CLK0 (RX)
+    si5351bx_clken = 0xfd;
+    i2cWrite(3, si5351bx_clken);    // enable CLK1 output
+}
+
+inline void switchToRX(void)
+{
+    // disable CLK1 (TX) and enable CLK0 (RX)
+    si5351bx_clken = 0xfe;
+    i2cWrite(3, si5351bx_clken);
+
+    // may need little delay here to wait the output from PA settles to zero before turning on the RX switch
+
+    // switch to RX mode
+    digitalWrite(A1, HIGH);         // enable RX
+}
+
+bool gIsInTxMode = false;
+
+/*
+    detected_freq_12p4 is in 12.4 fixed point number, 0.0625Hz resolution, 0.0Hz ~ 4095.9375Hz
+    so, if you only need the integer part, use (detected_freq_12p4 >> 4)
+ */
+inline void detectedAudioFrequency(uint16_t detected_freq_12p4)
+{
+    si5351a_set_freq((OPfreq << PLL_CALCULATION_PRECISION) + (uint32_t)detected_freq_12p4);    // update CLK1 frequency
+
+    if (gIsInTxMode == false) {
+        switchToTX();
+        gIsInTxMode = true;
+    }
+}
+
+inline void notDetectedAudioFrequency(void)
+{
+    switchToRX();
+    gIsInTxMode = false;
+}
+
+
+
+/*
     Audio Wave Length Measurement related functions
     Developed by Kazuhisa "Kazu" Terasaki AG6NS
  */
@@ -1452,6 +1489,32 @@ volatile uint16_t gTimer1OverflowCounter = 0;
 volatile uint32_t gCurrentTimer1InputCaptureValue = 0;
 volatile uint32_t gUpperHalfLenSum = 0;
 volatile uint32_t gLowerHalfLenSum = 0;
+
+/*
+    This function initializes the Analog Comparator and TIMER1
+    Needs to be called from setup()
+ */
+void initAFP(void)
+{
+    // initialize analog comparator
+    ADCSRA = 0x00;          // ADEN=0
+    ADCSRB = (1 << ACME);   // enable Analog Comparator Multiplexer
+    ADMUX = 0x02;           // MUX=0b0010 (ADC2)
+    ACSR = (1 << ACBG) | (1 << ACI) | (1 << ACIS1) | (0 << ACIS0);   // enable Bandgap Voltage Reference, clear Analog Comparator Interrupt flag, ACIS=0b10 (Comparator Interrupt on Falling Output Edge)
+    //ACSR |= (1 << ACIE);   // enable Analog Comparator Interrupt
+
+    // initialize TIMER1
+    noInterrupts();
+    TCCR1A = 0;
+    TCCR1B = 0;
+    TCCR1C = 0;
+    TCCR1B = (1 << ICNC1) | (0 << ICES1) | (1 << CS10);// enable Input Capture Noise Canceler, Input Capture Edge Select (Falling), CS=0b001 (16MHz / 1)
+    ICR1 = 0;
+    ACSR |= (1 << ACIC);      // enable Analog Comparator Input Capture
+    TIFR1 = 0x027;            // clear interrupt flags
+    TIMSK1 |= (1 << ICIE1) | (1 << TOIE1);   // enable Input Capture Interrupt, enable Timer1 Overflow Interrupt
+    interrupts();
+}
 
 inline void resetMeasuredValues(void)
 {
@@ -1496,9 +1559,13 @@ inline uint32_t readCurrentTimer1Value(void)
     return currentTimer1Value;
 }
 
+/*
+    This function needs to be called from loop() periodically
+    (e.g. every milli-seconds)
+ */
 void processAudioInput(bool checkNoSignal)
 {
-    static bool sIsTransmitting = false;
+    static bool sIsDetectingAudio = false;
 
     // read the length of the last measured audio wave
     uint32_t currentInputCaptureValue;
@@ -1537,16 +1604,11 @@ void processAudioInput(bool checkNoSignal)
                 // found audio signal
                 sLastValidSignalInputCaptureValue = currentInputCaptureValue;
 
-                if (sIsTransmitting) {
-                    digitalWrite(A1, LOW);              // disable RX
-                    si5351a_set_freq((OPfreq << PLL_CALCULATION_PRECISION) + audioFreq);    // update CLK1 frequency
-                    if (si5351bx_clken != 0xfd) {
-                        si5351bx_clken = 0xfd;
-                        i2cWrite(3, si5351bx_clken);    // enable CLK1 output
-                    }
+                if (sIsDetectingAudio && audioFreq <= 0x0000FFFF) {
+                    detectedAudioFrequency(audioFreq);
                 }
 
-                sIsTransmitting = true;     // set this flag at here so we can ignore the first detected frequency which might include some error
+                sIsDetectingAudio = true;     // set this flag at here so we can ignore the first detected frequency which might include some error
             }
 
             sLastVFOUpdatedInputCaptureValue = currentInputCaptureValue;
@@ -1556,7 +1618,7 @@ void processAudioInput(bool checkNoSignal)
         }
     }
 
-    if (checkNoSignal && sIsTransmitting) {
+    if (checkNoSignal && sIsDetectingAudio) {
         uint32_t currentTimer1Value = readCurrentTimer1Value();
         uint32_t noSignalPeriod = currentTimer1Value - sLastValidSignalInputCaptureValue;
         if (noSignalPeriod > NO_SIGNAL_PERIOD_THRESHOLD) {
@@ -1568,12 +1630,9 @@ void processAudioInput(bool checkNoSignal)
 
             resetMeasuredValues();
 
-            // disable CLK1 (TX) and enable CLK0 (RX), switch to RX mode
-            si5351bx_clken = 0xfe;
-            i2cWrite(3, si5351bx_clken);
-            digitalWrite(A1, HIGH);         // enable RX
+            notDetectedAudioFrequency();
 
-            sIsTransmitting = false;
+            sIsDetectingAudio = false;
         }
     }
 }   

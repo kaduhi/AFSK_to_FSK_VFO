@@ -19,6 +19,7 @@ Since the original source code from QRPGuys is licensed under GPL v3, all the so
 # Branches
 
 - <a href="https://github.com/kaduhi/AFSK_to_FSK_VFO/tree/main" target="_blank">main</a> - this is a main branch, usually in sync with <a href="https://github.com/kaduhi/AFSK_to_FSK_VFO/tree/QRPGuys_official_releases" target="_blank">QRPGuys_official_releases</a>
+- <a href="https://github.com/kaduhi/AFSK_to_FSK_VFO/tree/separate_AFP_code" target="_blank">separate_AFP_code</a> - make a clear separation between AFP code and <a href="https://qrpguys.com/qrpguys-digital-fsk-transceiver-iii" target="_blank">QRPGuys AFP-FSK Digital Transceiver III</a> kit specific code
 - <a href="https://github.com/kaduhi/AFSK_to_FSK_VFO/tree/QRPGuys_official_releases" target="_blank">QRPGuys_official_releases</a> - this always keeps the latest official release from <a href="https://qrpguys.com/" target="_blank">QRPGuys</a>
 - <a href="https://github.com/kaduhi/AFSK_to_FSK_VFO/tree/dsb_digital_transceiver_II_mods" target="_blank">dsb_digital_transceiver_II_mods</a> - this is the mods I have developed for <a href="https://qrpguys.com/qrpguys-40-30-20m-dsb-digital-transceiver-ii-kit" target="_blank">"QRPGuys DSB Digital Transceiver II Kit"</a> with optional <a href="https://qrpguys.com/vfo-dsb-digital-transceiver-kit" target="_blank">"QRPGuys Si5351A 160m-10m VFO Kit"</a> board
 
