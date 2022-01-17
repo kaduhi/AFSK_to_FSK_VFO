@@ -28,6 +28,17 @@
 #define FT8_VFO                         1
 //*********************************************************************
 
+#define ENABLE_CAT_INTERFACE            1
+
+#if ENABLE_CAT_INTERFACE
+#include "src/IC746CAT/IC746.h"
+bool gCATPttOn = false;
+bool gCATSplitOn = false;
+unsigned long gCATOtherVfoFreq = 0L;
+bool gCATSsbModeLsb = false;
+bool gCATVfoBActive = false;
+#endif //ENABLE_CAT_INTERFACE
+
 #define CPU_CLOCK_FREQ                  16000000                    // 16MHz
 
 
@@ -271,6 +282,10 @@ delay(1000);
     delay(1000); //let things settle down a bit
     displayfreq();
     PLLwrite();
+
+#if ENABLE_CAT_INTERFACE
+    init_IC746CAT_library();
+#endif //ENABLE_CAT_INTERFACE
 }    
 void loop() {
 
@@ -929,6 +944,11 @@ void PLLwrite() {
 
 #if FT8_VFO
     si5351bx_setfreq(0, OPfreq); //update clock chip with VFO frequency. 
+#if ENABLE_CAT_INTERFACE
+    if (gCATOtherVfoFreq == 0L) {
+        gCATOtherVfoFreq = OPfreq;
+    }
+#endif //ENABLE_CAT_INTERFACE
 #endif
        
 #if MULTIDC_VFO    
@@ -1537,9 +1557,37 @@ void processAudioInput(bool checkNoSignal)
                 // found audio signal
                 sLastValidSignalInputCaptureValue = currentInputCaptureValue;
 
+#if ENABLE_CAT_INTERFACE
+                if (!gCATPttOn) {
+                    // disable FSK output even still detecting AFSK signal
+                    // disable CLK1 (TX) and enable CLK0 (RX), switch to RX mode
+                    si5351bx_clken = 0xfe;
+                    i2cWrite(3, si5351bx_clken);
+                    digitalWrite(A1, HIGH);         // enable RX
+                }
+                else
+                    // do not enable FSK output even CAT PTT is ON unless detecting AFSK signal
+#endif //ENABLE_CAT_INTERFACE
                 if (sIsTransmitting) {
                     digitalWrite(A1, LOW);              // disable RX
+#if ENABLE_CAT_INTERFACE
+                    unsigned long freq = OPfreq;
+                    if (gCATSplitOn) {
+                        freq = gCATOtherVfoFreq;
+                    }
+                    freq <<= PLL_CALCULATION_PRECISION;
+                    if (gCATSsbModeLsb) {
+                        // LSB
+                        freq -= audioFreq;
+                    }
+                    else {
+                        // USB
+                        freq += audioFreq;
+                    }
+                    si5351a_set_freq(freq);    // update CLK1 frequency
+#else //!ENABLE_CAT_INTERFACE
                     si5351a_set_freq((OPfreq << PLL_CALCULATION_PRECISION) + audioFreq);    // update CLK1 frequency
+#endif //!ENABLE_CAT_INTERFACE
                     if (si5351bx_clken != 0xfd) {
                         si5351bx_clken = 0xfd;
                         i2cWrite(3, si5351bx_clken);    // enable CLK1 output
@@ -1633,3 +1681,101 @@ ISR(TIMER1_CAPT_vect) {
 ISR(TIMER1_OVF_vect) {
     gTimer1OverflowCounter++;
 }
+
+
+
+#if ENABLE_CAT_INTERFACE
+/*
+    CAT interface related glue code
+    Developed by Kazuhisa "Kazu" Terasaki AG6NS
+
+    Using the "IC746CAT" library in https://github.com/kk4das/IC746CAT developed by Dean Souleles, KK4DAS
+ */
+
+IC746 radio = IC746();
+
+void init_IC746CAT_library(void)
+{
+    radio.addCATPtt(catSetPtt);
+    radio.addCATGetPtt(catGetPtt);
+    radio.addCATAtoB(catVfoAtoB);
+    radio.addCATSwapVfo(catSwapVfo);
+    radio.addCATsplit(catSetSplit);
+    radio.addCATFSet(catSetFreq);
+    radio.addCATMSet(catSetMode);
+    radio.addCATVSet(catSetVFO);
+    radio.addCATGetFreq(catGetFreq);
+    radio.addCATGetMode(catGetMode);
+
+    radio.begin(19200, SERIAL_8N1);
+}
+
+void catSetPtt(boolean catPTT)
+{
+    gCATPttOn = (bool)catPTT;
+}
+
+boolean catGetPtt(void)
+{
+    return (boolean)gCATPttOn;
+}
+
+void catSetSplit(boolean catSplit)
+{
+    gCATSplitOn = (bool)catSplit;
+}
+
+void catSwapVfo()
+{
+    unsigned long temp = OPfreq;
+    OPfreq = gCATOtherVfoFreq;
+    gCATOtherVfoFreq = temp;
+
+    gCATVfoBActive = !gCATVfoBActive;
+
+    PLLwrite();
+}
+
+void catSetFreq(long f)
+{
+    OPfreq = (unsigned long)f;
+
+    PLLwrite();
+}
+
+void catSetMode(byte m)
+{
+    gCATSsbModeLsb = (m == CAT_MODE_LSB);
+}
+
+void catSetVFO(byte v)
+{
+    if (v == CAT_VFO_A) {
+        // VFO A
+        if (gCATVfoBActive) {
+            catSwapVfo();   // this will flip the gCATVfoBActive
+        }
+    }
+    else {
+        // VFO B
+        if (!gCATVfoBActive) {
+            catSwapVfo();   // this will flip the gCATVfoBActive
+        }
+    }
+}
+
+void catVfoAtoB()
+{
+    gCATOtherVfoFreq = OPfreq;
+}
+
+long catGetFreq() {
+    return (long)OPfreq;
+}
+
+// function to pass the mode to the cat library
+byte catGetMode() {
+    return gCATSsbModeLsb ? CAT_MODE_LSB : CAT_MODE_USB;
+}
+
+#endif //ENABLE_CAT_INTERFACE
