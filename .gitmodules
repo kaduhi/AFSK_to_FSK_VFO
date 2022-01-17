@@ -1,0 +1,3 @@
+[submodule "src/IC746CAT"]
+	path = src/IC746CAT
+	url = https://github.com/kaduhi/IC746CAT.git
