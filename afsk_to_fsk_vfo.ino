@@ -30,14 +30,21 @@
 
 #define ENABLE_CAT_INTERFACE            1
 
+
 #if ENABLE_CAT_INTERFACE
+
 #include "src/IC746CAT/IC746.h"
+
+IC746 radio = IC746();
+
 bool gCATPttOn = false;
 bool gCATSplitOn = false;
 unsigned long gCATOtherVfoFreq = 0L;
 bool gCATSsbModeLsb = false;
 bool gCATVfoBActive = false;
+
 #endif //ENABLE_CAT_INTERFACE
+
 
 #define CPU_CLOCK_FREQ                  16000000                    // 16MHz
 
@@ -328,6 +335,10 @@ void loop() {
         Tune_DWN();
     }
 #endif
+
+#if ENABLE_CAT_INTERFACE
+    radio.check();
+#endif //ENABLE_CAT_INTERFACE
 
 #if FT8_VFO
 SKIP_UI:
@@ -906,7 +917,11 @@ void readswitches() {
     DDRD = 0x00;
     PORTD = 0xff;
     digitalWrite(8, LOW);
+#if ENABLE_CAT_INTERFACE
+    sw_inputs = PIND | 0x03;    // only reads S1 MENU switch
+#else //!ENABLE_CAT_INTERFACE
     sw_inputs = PIND;
+#endif //!ENABLE_CAT_INTERFACE
     digitalWrite(8, HIGH);
     DDRD = 0xff;
     
@@ -1692,8 +1707,6 @@ ISR(TIMER1_OVF_vect) {
     Using the "IC746CAT" library in https://github.com/kk4das/IC746CAT developed by Dean Souleles, KK4DAS
  */
 
-IC746 radio = IC746();
-
 void init_IC746CAT_library(void)
 {
     radio.addCATPtt(catSetPtt);
@@ -1734,6 +1747,7 @@ void catSwapVfo()
     gCATVfoBActive = !gCATVfoBActive;
 
     PLLwrite();
+    displayfreq();
 }
 
 void catSetFreq(long f)
@@ -1741,6 +1755,7 @@ void catSetFreq(long f)
     OPfreq = (unsigned long)f;
 
     PLLwrite();
+    displayfreq();
 }
 
 void catSetMode(byte m)
