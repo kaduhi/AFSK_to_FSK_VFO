@@ -35,6 +35,9 @@
 
 #include "src/IC746CAT/IC746.h"
 
+// enable this only if you want the CAT to control PTT, otherwise VOX is used
+#define CAT_CONTROLS_PTT                0
+
 IC746 radio = IC746();
 
 bool gCATPttOn = false;
@@ -1573,6 +1576,7 @@ void processAudioInput(bool checkNoSignal)
                 sLastValidSignalInputCaptureValue = currentInputCaptureValue;
 
 #if ENABLE_CAT_INTERFACE
+#if CAT_CONTROLS_PTT
                 if (!gCATPttOn) {
                     // disable FSK output even still detecting AFSK signal
                     // disable CLK1 (TX) and enable CLK0 (RX), switch to RX mode
@@ -1582,6 +1586,7 @@ void processAudioInput(bool checkNoSignal)
                 }
                 else
                     // do not enable FSK output even CAT PTT is ON unless detecting AFSK signal
+#endif //CAT_CONTROLS_PTT
 #endif //ENABLE_CAT_INTERFACE
                 if (sIsTransmitting) {
                     digitalWrite(A1, LOW);              // disable RX
